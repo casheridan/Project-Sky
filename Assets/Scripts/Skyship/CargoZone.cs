@@ -35,6 +35,8 @@ namespace Skyship
         [SerializeField] private float totalWeight;
         [SerializeField] private List<CargoItem> securedItems = new List<CargoItem>();
 
+        private Dictionary<CargoItem, float> itemWeightContributions = new Dictionary<CargoItem, float>();
+
         /// <summary>Total weight of all cargo currently inside this zone.</summary>
         public float TotalWeight => totalWeight;
         public IReadOnlyList<CargoItem> SecuredItems => securedItems;
@@ -74,29 +76,48 @@ namespace Skyship
             }
         }
 
-        /// <summary>Register an item as active here and add its weight.</summary>
-        public void AddItem(CargoItem item)
+        /// <summary>
+        /// Updates the fractional weight contribution of an item.
+        /// </summary>
+        public void SetItemWeightContribution(CargoItem item, float weightContribution)
         {
-            if (item == null || securedItems.Contains(item)) return;
-            securedItems.Add(item);
+            if (item == null) return;
+
+            if (weightContribution > 0.001f)
+            {
+                itemWeightContributions[item] = weightContribution;
+                if (!securedItems.Contains(item))
+                {
+                    securedItems.Add(item);
+                }
+            }
+            else
+            {
+                itemWeightContributions.Remove(item);
+                securedItems.Remove(item);
+            }
+
             RecalculateWeight();
         }
 
-        /// <summary>Remove an item and subtract its weight.</summary>
+        /// <summary>Remove an item completely from this zone.</summary>
         public void RemoveItem(CargoItem item)
         {
             if (item == null) return;
-            if (securedItems.Remove(item))
-                RecalculateWeight();
+            itemWeightContributions.Remove(item);
+            securedItems.Remove(item);
+            RecalculateWeight();
         }
 
         private void RecalculateWeight()
         {
             totalWeight = 0f;
-            for (int i = 0; i < securedItems.Count; i++)
+            foreach (var kvp in itemWeightContributions)
             {
-                if (securedItems[i] != null)
-                    totalWeight += securedItems[i].weight;
+                if (kvp.Key != null)
+                {
+                    totalWeight += kvp.Value;
+                }
             }
         }
 
@@ -107,10 +128,10 @@ namespace Skyship
             Color c = ZoneColor(zoneType);
             Gizmos.color = c;
             Vector3 center = transform.position + Vector3.up * 1.5f;
-            Gizmos.DrawWireCube(center, new Vector3(2f, 3.0f, 2f));
+            Gizmos.DrawWireCube(center, new Vector3(0.85f, 3.0f, 0.85f));
 
             UnityEditor.Handles.color = c;
-            UnityEditor.Handles.Label(transform.position + Vector3.up * 0.4f, $"{zoneType}\n{totalWeight:0} kg");
+            UnityEditor.Handles.Label(transform.position + Vector3.up * 0.4f, $"{zoneType}\n{totalWeight:0.0} kg");
         }
 #endif
 
