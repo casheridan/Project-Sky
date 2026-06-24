@@ -43,18 +43,17 @@ namespace Skyship
 
         private void Update()
         {
-            // Continuously evaluate the closest zone as we slide, roll, or move
-            if (overlappingZones.Count > 0 && !isHeld)
+            // Continuously evaluate and distribute our weight across overlapping zones
+            if (!isHeld)
             {
-                UpdateCurrentZone();
+                UpdateWeightDistribution();
             }
         }
 
         /// <summary>Called by PlayerInteraction when the item is picked up.</summary>
         public void OnPickedUp(Transform holdParent)
         {
-            if (isSecured || currentZone != null)
-                RemoveFromZone();
+            RemoveFromAllZones();
 
             overlappingZones.Clear();
             isHeld = true;
@@ -85,7 +84,7 @@ namespace Skyship
             if (!overlappingZones.Contains(zone))
             {
                 overlappingZones.Add(zone);
-                UpdateCurrentZone();
+                UpdateWeightDistribution();
             }
         }
 
@@ -95,14 +94,34 @@ namespace Skyship
             if (zone == null) return;
             if (overlappingZones.Remove(zone))
             {
-                UpdateCurrentZone();
+                // Remove contribution to this zone completely
+                zone.SetItemWeightContribution(this, 0f);
+                UpdateWeightDistribution();
             }
         }
 
-        private void UpdateCurrentZone()
+        [Header("Interpolation Settings")]
+        [Tooltip("The max distance from a zone's center to still contribute weight to it.")]
+        public float maxInterpolationDistance = 2.0f;
+
+        // Keep track of which zones we currently contribute weight to
+        private List<CargoZone> contributingZones = new List<CargoZone>();
+
+        private void UpdateWeightDistribution()
         {
-            CargoZone bestZone = null;
+            if (overlappingZones.Count == 0)
+            {
+                RemoveFromAllZones();
+                currentZone = null;
+                isSecured = false;
+                return;
+            }
+
+            // Calculate raw weights and find the closest zone
+            float totalRawFactor = 0f;
+            float[] rawFactors = new float[overlappingZones.Count];
             float minDst = float.MaxValue;
+            CargoZone bestZone = null;
 
             for (int i = 0; i < overlappingZones.Count; i++)
             {
@@ -110,38 +129,85 @@ namespace Skyship
                 if (zone == null) continue;
 
                 float dst = Vector3.Distance(transform.position, zone.transform.position);
+                
+                // Track closest zone for general 'currentZone' reference
                 if (dst < minDst)
                 {
                     minDst = dst;
                     bestZone = zone;
                 }
+
+                // Linear falloff: max at center, 0 at maxInterpolationDistance
+                float rawFactor = Mathf.Max(0f, maxInterpolationDistance - dst);
+                rawFactors[i] = rawFactor;
+                totalRawFactor += rawFactor;
             }
 
-            if (currentZone != bestZone)
+            // Update general state
+            currentZone = bestZone;
+            isSecured = (currentZone != null);
+
+            // Distribute weight
+            List<CargoZone> activeZonesThisFrame = new List<CargoZone>();
+
+            for (int i = 0; i < overlappingZones.Count; i++)
             {
-                if (currentZone != null)
+                CargoZone zone = overlappingZones[i];
+                if (zone == null) continue;
+
+                // Normalize factor
+                float factor = totalRawFactor > 0.001f ? rawFactors[i] / totalRawFactor : 0f;
+                float contributedWeight = factor * weight;
+
+                if (contributedWeight > 0.001f)
                 {
-                    currentZone.RemoveItem(this);
+                    zone.SetItemWeightContribution(this, contributedWeight);
+                    activeZonesThisFrame.Add(zone);
+                    if (!contributingZones.Contains(zone))
+                    {
+                        contributingZones.Add(zone);
+                    }
                 }
-
-                currentZone = bestZone;
-                isSecured = (currentZone != null);
-
-                if (currentZone != null)
+                else
                 {
-                    currentZone.AddItem(this);
+                    zone.SetItemWeightContribution(this, 0f);
+                    contributingZones.Remove(zone);
+                }
+            }
+
+            // Clean up any zones we are no longer contributing to (e.g. if we went outside maxInterpolationDistance)
+            for (int i = contributingZones.Count - 1; i >= 0; i--)
+            {
+                CargoZone zone = contributingZones[i];
+                if (!activeZonesThisFrame.Contains(zone))
+                {
+                    if (zone != null)
+                    {
+                        zone.SetItemWeightContribution(this, 0f);
+                    }
+                    contributingZones.RemoveAt(i);
                 }
             }
         }
 
-        /// <summary>Detach from the current zone (subtracts weight).</summary>
+        /// <summary>Detach completely from all zones.</summary>
+        public void RemoveFromAllZones()
+        {
+            for (int i = contributingZones.Count - 1; i >= 0; i--)
+            {
+                CargoZone zone = contributingZones[i];
+                if (zone != null)
+                {
+                    zone.SetItemWeightContribution(this, 0f);
+                }
+            }
+            contributingZones.Clear();
+        }
+
+        /// <summary>Legacy method kept for backwards compatibility (no-op now since Update handles it).</summary>
         public void RemoveFromZone()
         {
-            if (currentZone != null)
-                currentZone.RemoveItem(this);
-
-            currentZone = null;
-            isSecured = false;
+            RemoveFromAllZones();
         }
 
         private void ApplyPhysics(bool dynamic, bool colliderEnabled)

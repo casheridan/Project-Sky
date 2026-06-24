@@ -29,10 +29,10 @@ namespace Skyship
         [Header("Capacity & Imbalance Tuning")]
         [Tooltip("Total weight (all zones) considered 100% load.")]
         public float maxCapacity = 200f;
-        [Tooltip("Left/right weight difference that maps to maximum roll.")]
-        public float maxSideImbalance = 80f;
-        [Tooltip("Front/rear weight difference that maps to maximum pitch.")]
-        public float maxFrontBackImbalance = 80f;
+        [Tooltip("Maximum roll torque (weight * distance) that maps to maximum roll angle.")]
+        public float maxSideImbalance = 160f;
+        [Tooltip("Maximum pitch torque (weight * distance) that maps to maximum pitch angle.")]
+        public float maxFrontBackImbalance = 160f;
 
         [Header("Tilt Tuning")]
         public float maxRollAngle = 20f;
@@ -49,11 +49,6 @@ namespace Skyship
         public float maxTurnPull = 15f;
 
         [Header("Calculated Weights (read-only)")]
-        public float frontLeft;
-        public float frontRight;
-        public float rearLeft;
-        public float rearRight;
-        public float center;
         public float totalWeight;
         public float leftWeight;
         public float rightWeight;
@@ -89,35 +84,47 @@ namespace Skyship
 
         private void RecalculateBalance()
         {
-            frontLeft = frontRight = rearLeft = rearRight = center = 0f;
+            totalWeight = 0f;
+            leftWeight = 0f;
+            rightWeight = 0f;
+            frontWeight = 0f;
+            rearWeight = 0f;
+
+            float rollTorque = 0f;
+            float pitchTorque = 0f;
+
+            if (shipVisualRoot == null) return;
 
             for (int i = 0; i < zones.Count; i++)
             {
                 CargoZone z = zones[i];
                 if (z == null) continue;
-                switch (z.zoneType)
-                {
-                    case ZoneType.FrontLeft: frontLeft += z.TotalWeight; break;
-                    case ZoneType.FrontRight: frontRight += z.TotalWeight; break;
-                    case ZoneType.RearLeft: rearLeft += z.TotalWeight; break;
-                    case ZoneType.RearRight: rearRight += z.TotalWeight; break;
-                    case ZoneType.Center: center += z.TotalWeight; break;
-                }
-            }
 
-            leftWeight = frontLeft + rearLeft;
-            rightWeight = frontRight + rearRight;
-            frontWeight = frontLeft + frontRight;
-            rearWeight = rearLeft + rearRight;
-            totalWeight = leftWeight + rightWeight + center;
+                float w = z.TotalWeight;
+                if (w <= 0f) continue;
+
+                totalWeight += w;
+
+                // Calculate relative position of this zone to the ship center/pivot
+                Vector3 relativePos = shipVisualRoot.InverseTransformPoint(z.transform.position);
+
+                // Add to torques (Weight * Distance)
+                rollTorque += w * relativePos.x;
+                pitchTorque += w * relativePos.z;
+
+                // Bin into directional weights for inspector-friendly diagnostics
+                if (relativePos.x < -0.1f) leftWeight += w;
+                else if (relativePos.x > 0.1f) rightWeight += w;
+
+                if (relativePos.z > 0.1f) frontWeight += w;
+                else if (relativePos.z < -0.1f) rearWeight += w;
+            }
 
             loadPercent = maxCapacity > 0.01f ? totalWeight / maxCapacity : 0f;
 
             // Normalized -1..1 imbalances.
-            rollImbalance = Mathf.Clamp(
-                (rightWeight - leftWeight) / Mathf.Max(0.01f, maxSideImbalance), -1f, 1f);
-            pitchImbalance = Mathf.Clamp(
-                (frontWeight - rearWeight) / Mathf.Max(0.01f, maxFrontBackImbalance), -1f, 1f);
+            rollImbalance = Mathf.Clamp(rollTorque / Mathf.Max(0.01f, maxSideImbalance), -1f, 1f);
+            pitchImbalance = Mathf.Clamp(pitchTorque / Mathf.Max(0.01f, maxFrontBackImbalance), -1f, 1f);
 
             // Handling outputs.
             float loadClamped = Mathf.Clamp01(loadPercent);
@@ -133,8 +140,7 @@ namespace Skyship
             if (shipVisualRoot == null) return;
 
             // Roll about Z from left/right weight, pitch about X from front/rear.
-            // Signs assume +X = right, +Z = forward. Flip a sign here if your deck
-            // mesh is oriented differently and the tilt looks inverted.
+            // Signs assume +X = right, +Z = forward.
             float targetRoll = -rollImbalance * maxRollAngle;  // heavy-right dips right
             float targetPitch = pitchImbalance * maxPitchAngle; // heavy-front dips nose down
 
