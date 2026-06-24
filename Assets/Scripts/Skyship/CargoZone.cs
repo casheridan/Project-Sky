@@ -17,52 +17,64 @@ namespace Skyship
     }
 
     /// <summary>
-    /// A single cargo placement area on the deck. Tracks the total weight of the
-    /// cargo secured into it and provides a snap point for placement.
+    /// A single cargo placement area on the deck. Tracks the total weight of any
+    /// cargo currently sitting physically inside its trigger bounds.
     ///
     /// SCENE SETUP:
     ///  - Create a Cube on the deck (e.g. Scale 2 x 0.2 x 2) for each zone.
     ///  - Add this component and pick the matching ZoneType.
-    ///  - (Optional) Add an empty child named "SnapPoint" and assign it to
-    ///    'snapPoint' so cargo lands at a tidy spot. If left empty the zone's own
-    ///    transform is used.
-    ///  - Keep the cube's BoxCollider NON-trigger; the interaction ray uses it so
-    ///    the player can look at the zone and press F to secure cargo.
+    ///  - The script automatically configures a trigger zone that extends upwards
+    ///    so you can place items anywhere inside its bounds.
     /// </summary>
     public class CargoZone : MonoBehaviour
     {
         [Tooltip("Which balance quadrant this zone feeds into.")]
         public ZoneType zoneType = ZoneType.Center;
 
-        [Tooltip("Optional transform where secured cargo snaps to. " +
-                 "If empty, this object's transform is used.")]
-        public Transform snapPoint;
-
-        [Tooltip("Vertical offset above the snap point so cargo rests on top of the zone instead of clipping inside it.")]
-        public float placeHeightOffset = 0.5f;
-
         [Header("Runtime (read-only)")]
         [SerializeField] private float totalWeight;
         [SerializeField] private List<CargoItem> securedItems = new List<CargoItem>();
 
-        /// <summary>Total weight of all cargo currently secured in this zone.</summary>
+        /// <summary>Total weight of all cargo currently inside this zone.</summary>
         public float TotalWeight => totalWeight;
         public IReadOnlyList<CargoItem> SecuredItems => securedItems;
 
-        /// <summary>World position where a newly secured item should be placed.</summary>
-        public Vector3 GetPlacePosition()
+        private void Awake()
         {
-            Transform t = snapPoint != null ? snapPoint : transform;
-            return t.position + Vector3.up * placeHeightOffset;
+            // Setup physical bounds: Keep the main BoxCollider solid so player & crates stand on it
+            BoxCollider solidCol = GetComponent<BoxCollider>();
+            if (solidCol == null)
+            {
+                solidCol = gameObject.AddComponent<BoxCollider>();
+            }
+            solidCol.isTrigger = false;
+
+            // Dynamically add a tall trigger volume directly above the pad to detect overlapping cargo items
+            BoxCollider triggerCol = gameObject.AddComponent<BoxCollider>();
+            triggerCol.isTrigger = true;
+            triggerCol.size = new Vector3(solidCol.size.x, 3.0f, solidCol.size.z);
+            triggerCol.center = new Vector3(solidCol.center.x, 1.5f, solidCol.center.z);
         }
 
-        /// <summary>Transform that secured items should be parented to (so they ride with the ship).</summary>
-        public Transform GetParentForItems()
+        private void OnTriggerEnter(Collider other)
         {
-            return snapPoint != null ? snapPoint : transform;
+            CargoItem item = other.GetComponentInParent<CargoItem>();
+            if (item != null)
+            {
+                item.RegisterOverlappingZone(this);
+            }
         }
 
-        /// <summary>Register an item as secured here and add its weight.</summary>
+        private void OnTriggerExit(Collider other)
+        {
+            CargoItem item = other.GetComponentInParent<CargoItem>();
+            if (item != null)
+            {
+                item.UnregisterOverlappingZone(this);
+            }
+        }
+
+        /// <summary>Register an item as active here and add its weight.</summary>
         public void AddItem(CargoItem item)
         {
             if (item == null || securedItems.Contains(item)) return;
@@ -70,7 +82,7 @@ namespace Skyship
             RecalculateWeight();
         }
 
-        /// <summary>Remove a secured item and subtract its weight.</summary>
+        /// <summary>Remove an item and subtract its weight.</summary>
         public void RemoveItem(CargoItem item)
         {
             if (item == null) return;
@@ -94,12 +106,11 @@ namespace Skyship
         {
             Color c = ZoneColor(zoneType);
             Gizmos.color = c;
-            Vector3 center = GetPlacePosition();
-            Gizmos.DrawWireCube(center, new Vector3(1.5f, 0.3f, 1.5f));
-            Gizmos.DrawSphere(center, 0.1f);
+            Vector3 center = transform.position + Vector3.up * 1.5f;
+            Gizmos.DrawWireCube(center, new Vector3(2f, 3.0f, 2f));
 
             UnityEditor.Handles.color = c;
-            UnityEditor.Handles.Label(center + Vector3.up * 0.4f, $"{zoneType}\n{totalWeight:0} kg");
+            UnityEditor.Handles.Label(transform.position + Vector3.up * 0.4f, $"{zoneType}\n{totalWeight:0} kg");
         }
 #endif
 

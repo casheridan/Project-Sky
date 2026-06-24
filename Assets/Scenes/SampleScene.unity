@@ -270,6 +270,7 @@ MonoBehaviour:
   isHeld: 0
   isSecured: 0
   currentZone: {fileID: 0}
+  overlappingZones: []
 --- !u!54 &189143838
 Rigidbody:
   m_ObjectHideFlags: 0
@@ -384,7 +385,7 @@ Transform:
   m_GameObject: {fileID: 189143836}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: -3, y: 2.6, z: 2.7}
+  m_LocalPosition: {x: -3, y: 2.6, z: 5.67}
   m_LocalScale: {x: 0.8, y: 0.8, z: 0.8}
   m_ConstrainProportionsScale: 0
   m_Children: []
@@ -809,8 +810,6 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::Skyship.CargoZone
   zoneType: 2
-  snapPoint: {fileID: 0}
-  placeHeightOffset: 0.5
   totalWeight: 0
   securedItems: []
 --- !u!23 &467384900
@@ -930,6 +929,7 @@ MonoBehaviour:
   isHeld: 0
   isSecured: 0
   currentZone: {fileID: 0}
+  overlappingZones: []
 --- !u!54 &595012838
 Rigidbody:
   m_ObjectHideFlags: 0
@@ -1044,7 +1044,7 @@ Transform:
   m_GameObject: {fileID: 595012836}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 3, y: 2.6, z: 2.7}
+  m_LocalPosition: {x: 3, y: 2.6, z: 5.31}
   m_LocalScale: {x: 0.8, y: 0.8, z: 0.8}
   m_ConstrainProportionsScale: 0
   m_Children: []
@@ -1220,8 +1220,6 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::Skyship.CargoZone
   zoneType: 0
-  snapPoint: {fileID: 0}
-  placeHeightOffset: 0.5
   totalWeight: 0
   securedItems: []
 --- !u!23 &722579827
@@ -1585,6 +1583,7 @@ MonoBehaviour:
   isHeld: 0
   isSecured: 0
   currentZone: {fileID: 0}
+  overlappingZones: []
 --- !u!54 &830619809
 Rigidbody:
   m_ObjectHideFlags: 0
@@ -1699,7 +1698,7 @@ Transform:
   m_GameObject: {fileID: 830619807}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: -1, y: 2.6, z: 2.7}
+  m_LocalPosition: {x: -1, y: 2.6, z: 5.47}
   m_LocalScale: {x: 0.8, y: 0.8, z: 0.8}
   m_ConstrainProportionsScale: 0
   m_Children: []
@@ -1861,6 +1860,7 @@ MonoBehaviour:
   isHeld: 0
   isSecured: 0
   currentZone: {fileID: 0}
+  overlappingZones: []
 --- !u!54 &1103757683
 Rigidbody:
   m_ObjectHideFlags: 0
@@ -1975,7 +1975,7 @@ Transform:
   m_GameObject: {fileID: 1103757681}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 3, y: 2.6, z: -2.7}
+  m_LocalPosition: {x: 3, y: 2.6, z: -5.78}
   m_LocalScale: {x: 0.8, y: 0.8, z: 0.8}
   m_ConstrainProportionsScale: 0
   m_Children: []
@@ -2142,8 +2142,6 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::Skyship.CargoZone
   zoneType: 3
-  snapPoint: {fileID: 0}
-  placeHeightOffset: 0.5
   totalWeight: 0
   securedItems: []
 --- !u!23 &1264187653
@@ -2394,8 +2392,6 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::Skyship.CargoZone
   zoneType: 1
-  snapPoint: {fileID: 0}
-  placeHeightOffset: 0.5
   totalWeight: 0
   securedItems: []
 --- !u!23 &1424480361
@@ -2646,8 +2642,6 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::Skyship.CargoZone
   zoneType: 4
-  snapPoint: {fileID: 0}
-  placeHeightOffset: 0.5
   totalWeight: 0
   securedItems: []
 --- !u!23 &1430684292
@@ -2982,6 +2976,7 @@ MonoBehaviour:
   isHeld: 0
   isSecured: 0
   currentZone: {fileID: 0}
+  overlappingZones: []
 --- !u!54 &1613364197
 Rigidbody:
   m_ObjectHideFlags: 0
@@ -3096,7 +3091,7 @@ Transform:
   m_GameObject: {fileID: 1613364195}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 1, y: 2.6, z: -2.7}
+  m_LocalPosition: {x: 1, y: 2.6, z: -5.83}
   m_LocalScale: {x: 0.8, y: 0.8, z: 0.8}
   m_ConstrainProportionsScale: 0
   m_Children: []
@@ -3385,6 +3380,7 @@ MonoBehaviour:
   isHeld: 0
   isSecured: 0
   currentZone: {fileID: 0}
+  overlappingZones: []
 --- !u!54 &1673625102
 Rigidbody:
   m_ObjectHideFlags: 0
@@ -3499,7 +3495,7 @@ Transform:
   m_GameObject: {fileID: 1673625100}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 1, y: 2.6, z: 2.7}
+  m_LocalPosition: {x: 1, y: 2.6, z: 5.25}
   m_LocalScale: {x: 0.8, y: 0.8, z: 0.8}
   m_ConstrainProportionsScale: 0
   m_Children: []
@@ -3517,6 +3513,8 @@ GameObject:
   - component: {fileID: 1772815718}
   - component: {fileID: 1772815717}
   - component: {fileID: 1772815716}
+  - component: {fileID: 1772815721}
+  - component: {fileID: 1772815720}
   m_Layer: 0
   m_Name: ShipRoot
   m_TagString: Untagged
@@ -3618,6 +3616,42 @@ Transform:
   - {fileID: 1073408499}
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!65 &1772815720
+BoxCollider:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1772815715}
+  m_Material: {fileID: 0}
+  m_IncludeLayers:
+    serializedVersion: 2
+    m_Bits: 0
+  m_ExcludeLayers:
+    serializedVersion: 2
+    m_Bits: 0
+  m_LayerOverridePriority: 0
+  m_IsTrigger: 1
+  m_ProvidesContacts: 0
+  m_Enabled: 1
+  serializedVersion: 3
+  m_Size: {x: 8, y: 3.0769806, z: 6}
+  m_Center: {x: 0, y: 2.4615097, z: 0}
+--- !u!114 &1772815721
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1772815715}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: c42e90800cb13e141b7ad2559da41d9e, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::Skyship.ShipPlatformArea
+  rideParent: {fileID: 1073408499}
+  currentShipVelocity: {x: 0, y: 0, z: 0}
+  itemsInPlatform: []
 --- !u!1 &1779805334
 GameObject:
   m_ObjectHideFlags: 0
@@ -3657,6 +3691,7 @@ MonoBehaviour:
   isHeld: 0
   isSecured: 0
   currentZone: {fileID: 0}
+  overlappingZones: []
 --- !u!54 &1779805336
 Rigidbody:
   m_ObjectHideFlags: 0
@@ -3771,7 +3806,7 @@ Transform:
   m_GameObject: {fileID: 1779805334}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: -1, y: 2.6, z: -2.7}
+  m_LocalPosition: {x: -1, y: 2.6, z: -5.69}
   m_LocalScale: {x: 0.8, y: 0.8, z: 0.8}
   m_ConstrainProportionsScale: 0
   m_Children: []
@@ -4182,6 +4217,7 @@ MonoBehaviour:
   isHeld: 0
   isSecured: 0
   currentZone: {fileID: 0}
+  overlappingZones: []
 --- !u!54 &2052334639
 Rigidbody:
   m_ObjectHideFlags: 0
@@ -4296,7 +4332,7 @@ Transform:
   m_GameObject: {fileID: 2052334637}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: -3, y: 2.6, z: -2.7}
+  m_LocalPosition: {x: -3, y: 2.6, z: -5.57}
   m_LocalScale: {x: 0.8, y: 0.8, z: 0.8}
   m_ConstrainProportionsScale: 0
   m_Children: []

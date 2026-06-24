@@ -7,7 +7,6 @@ namespace Skyship
     /// Handles looking at and manipulating cargo:
     ///   E             -> pick up the cargo item in view (or drop the held one)
     ///   Left Mouse    -> drop the held item
-    ///   F             -> secure the held item into the cargo zone in view
     ///
     /// Lives on the Player next to FirstPersonController. Kept separate so the
     /// movement controller can be swapped without touching interaction logic.
@@ -45,7 +44,6 @@ namespace Skyship
 
             bool pickDropPressed = k != null && k.eKey.wasPressedThisFrame;
             bool dropClick = m != null && m.leftButton.wasPressedThisFrame;
-            bool securePressed = k != null && k.fKey.wasPressedThisFrame;
 
             if (heldItem == null)
             {
@@ -56,8 +54,6 @@ namespace Skyship
             {
                 if (pickDropPressed || dropClick)
                     DropHeld();
-                else if (securePressed)
-                    TrySecure();
             }
         }
 
@@ -86,27 +82,6 @@ namespace Skyship
             if (heldItem == null) return;
             Debug.Log($"[PlayerInteraction] Dropped '{heldItem.itemName}'.");
             heldItem.OnDropped();
-            heldItem = null;
-        }
-
-        private void TrySecure()
-        {
-            if (heldItem == null) return;
-            if (!RaycastFromCamera(out RaycastHit hit))
-            {
-                Debug.Log("[PlayerInteraction] Nothing in view to secure to.");
-                return;
-            }
-
-            CargoZone zone = hit.collider.GetComponentInParent<CargoZone>();
-            if (zone == null)
-            {
-                Debug.Log("[PlayerInteraction] No cargo zone in view to secure to.");
-                return;
-            }
-
-            Debug.Log($"[PlayerInteraction] Secured '{heldItem.itemName}' ({heldItem.weight} kg) to {zone.zoneType}.");
-            heldItem.SecureToZone(zone);
             heldItem = null;
         }
     }
