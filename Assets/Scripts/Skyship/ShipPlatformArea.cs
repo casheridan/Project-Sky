@@ -23,7 +23,7 @@ namespace Skyship
 
         [Header("Runtime State (read-only)")]
         [SerializeField] private Vector3 currentShipVelocity;
-        [SerializeField] private List<CargoItem> itemsInPlatform = new List<CargoItem>();
+        [SerializeField] public List<CargoItem> itemsInPlatform = new List<CargoItem>();
 
         private Vector3 lastPosition;
 

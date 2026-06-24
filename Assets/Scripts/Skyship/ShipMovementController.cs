@@ -4,18 +4,15 @@ using UnityEngine.InputSystem;
 namespace Skyship
 {
     /// <summary>
-    /// Placeholder flight model. Moves the ShipRoot forward and turns it, scaled
-    /// by the handling modifiers from ShipBalanceController so the ship becomes
-    /// slower and harder to steer as it loads up / goes off-balance.
+    /// Flight model with realistic heavy momentum and inertia.
+    /// Moves the ShipRoot forward/backward and turns it slowly, taking time to:
+    ///   - Accelerate and build up speed
+    ///   - Coast/glide to a stop (decelerate)
+    ///   - Build up angular speed to turn and recover from turns (yaw inertia)
     ///
     /// Pressing the TAB key toggles between walking around (first-person controller)
     /// and piloting the ship. When piloting, player movement and interaction are disabled,
     /// and the player is parented to the ship deck so they ride with it perfectly.
-    ///
-    /// SCENE SETUP:
-    ///  - Add to ShipRoot (same object as ShipBalanceController).
-    ///  - 'balance' auto-binds to the controller on the same object if left empty.
-    ///  - Leave 'playerController' and 'playerInteraction' empty to auto-detect the player.
     /// </summary>
     public class ShipMovementController : MonoBehaviour
     {
@@ -29,16 +26,34 @@ namespace Skyship
         [Tooltip("The player interaction script. Automatically found if left empty.")]
         public PlayerInteraction playerInteraction;
 
-        [Header("Base Handling")]
-        public float baseSpeed = 4f;
-        public float baseTurnSpeed = 30f;
+        [Header("Base Flight Speed")]
+        [Tooltip("Maximum forward flight speed at 0% load.")]
+        public float baseSpeed = 8f;
+        [Tooltip("Maximum turning speed at 0% load (degrees per second).")]
+        public float baseTurnSpeed = 25f;
+
+        [Header("Heavy Momentum & Inertia Tuning")]
+        [Tooltip("How fast the ship builds forward speed (acceleration). Lower = heavier feel.")]
+        public float accelerationRate = 1.0f;
+        [Tooltip("How fast the ship slows down when throttle is zero (passive glide drag). Lower = glides longer.")]
+        public float decelerationRate = 0.5f;
+        [Tooltip("How fast the ship slows down when active reverse throttle is applied (active brake).")]
+        public float brakeRate = 2.0f;
+        [Tooltip("How fast the ship builds up turning speed (turn inertia). Lower = heavier turning feel.")]
+        public float turnAccelerationRate = 1.5f;
+        [Tooltip("How fast the ship stops rotating when steering input is released (yaw friction).")]
+        public float turnDecelerationRate = 2.5f;
 
         [Header("Runtime State (read-only)")]
         [Tooltip("Whether the ship is currently being piloted. Toggle with Tab key.")]
         public bool inputEnabled = false;
+        [Tooltip("Current forward speed of the ship (meters per second).")]
+        public float currentSpeed = 0f;
+        [Tooltip("Current rotation speed of the ship (degrees per second).")]
+        public float currentTurnSpeed = 0f;
 
-        private float throttle; // -1..1
-        private float steer;    // -1..1
+        private float throttleInput; // -1..1
+        private float steerInput;    // -1..1
         private Transform originalPlayerParent;
 
         private void Awake()
@@ -70,28 +85,77 @@ namespace Skyship
 
             if (inputEnabled)
                 ReadTestInput();
+            else
+            {
+                throttleInput = 0f;
+                steerInput = 0f;
+            }
 
-            float speedMult = balance != null ? balance.speedMultiplier : 1f;
-            float turnPull = balance != null ? balance.turnPull : 0f;
-
-            // Forward/back movement, scaled by load.
-            transform.position += transform.forward * (throttle * baseSpeed * speedMult * Time.deltaTime);
-
-            // Steering = pilot steer (scaled by load) + automatic pull toward the heavy side (only when moving/powered).
-            float yaw = steer * baseTurnSpeed * speedMult + (turnPull * Mathf.Abs(throttle));
-            transform.Rotate(Vector3.up, yaw * Time.deltaTime, Space.World);
+            ApplyHeavyFlightPhysics();
         }
 
         private void ReadTestInput()
         {
-            throttle = 0f;
-            steer = 0f;
+            throttleInput = 0f;
+            steerInput = 0f;
             var k = Keyboard.current;
             if (k == null) return;
-            if (k.wKey.isPressed) throttle += 1f;
-            if (k.sKey.isPressed) throttle -= 1f;
-            if (k.dKey.isPressed) steer += 1f;
-            if (k.aKey.isPressed) steer -= 1f;
+            if (k.wKey.isPressed) throttleInput += 1f;
+            if (k.sKey.isPressed) throttleInput -= 1f;
+            if (k.dKey.isPressed) steerInput += 1f;
+            if (k.aKey.isPressed) steerInput -= 1f;
+        }
+
+        private void ApplyHeavyFlightPhysics()
+        {
+            float speedMult = balance != null ? balance.speedMultiplier : 1f;
+            float turnPull = balance != null ? balance.turnPull : 0f;
+
+            // ----------------------------------------------------
+            // 1. TRANSLATIONAL MOMENTUM (FORWARD / BACKWARD)
+            // ----------------------------------------------------
+            // Max speed is scaled by weight/load multipliers
+            float targetSpeed = throttleInput * baseSpeed * speedMult;
+
+            if (Mathf.Abs(throttleInput) > 0.05f)
+            {
+                // If applying throttle in the OPPOSITE direction of movement, use brake rate
+                bool isBraking = (throttleInput > 0f && currentSpeed < -0.05f) || (throttleInput < 0f && currentSpeed > 0.05f);
+                float rate = isBraking ? brakeRate : accelerationRate;
+
+                currentSpeed = Mathf.MoveTowards(currentSpeed, targetSpeed, rate * Time.deltaTime);
+            }
+            else
+            {
+                // Coast/glide passively to a stop
+                currentSpeed = Mathf.MoveTowards(currentSpeed, 0f, decelerationRate * Time.deltaTime);
+            }
+
+            // Move the ship forward based on current speed
+            transform.position += transform.forward * (currentSpeed * Time.deltaTime);
+
+            // ----------------------------------------------------
+            // 2. ROTATIONAL MOMENTUM (YAW / TURNING)
+            // ----------------------------------------------------
+            // Turning is scaled by speed (harder to turn at high speed, and steering pull matches movement speed)
+            float speedFactor = Mathf.Clamp01(Mathf.Abs(currentSpeed) / Mathf.Max(0.1f, baseSpeed));
+            float targetTurnSpeed = steerInput * baseTurnSpeed * speedMult;
+
+            // Add auto-pull toward the heavy side (only when the ship has forward/backward momentum)
+            targetTurnSpeed += turnPull * speedFactor;
+
+            if (Mathf.Abs(steerInput) > 0.05f)
+            {
+                currentTurnSpeed = Mathf.MoveTowards(currentTurnSpeed, targetTurnSpeed, turnAccelerationRate * Time.deltaTime);
+            }
+            else
+            {
+                // Decay rotation speed passively to simulate yaw momentum and friction
+                currentTurnSpeed = Mathf.MoveTowards(currentTurnSpeed, 0f, turnDecelerationRate * Time.deltaTime);
+            }
+
+            // Rotate the ship around its yaw axis based on current turn speed
+            transform.Rotate(Vector3.up, currentTurnSpeed * Time.deltaTime, Space.World);
         }
 
         /// <summary>
@@ -142,16 +206,16 @@ namespace Skyship
                 playerInteraction.enabled = !inputEnabled;
             }
 
-            // Always reset movement state when pilot controls are turned off
+            // Reset inputs when pilot controls are turned off (momentum will coast down in Update)
             if (!inputEnabled)
             {
-                throttle = 0f;
-                steer = 0f;
+                throttleInput = 0f;
+                steerInput = 0f;
             }
         }
 
         // --- Public API for external seat / UI triggers ---
-        public void SetThrottle(float value) => throttle = Mathf.Clamp(value, -1f, 1f);
-        public void SetSteer(float value) => steer = Mathf.Clamp(value, -1f, 1f);
+        public void SetThrottle(float value) => throttleInput = Mathf.Clamp(value, -1f, 1f);
+        public void SetSteer(float value) => steerInput = Mathf.Clamp(value, -1f, 1f);
     }
 }
