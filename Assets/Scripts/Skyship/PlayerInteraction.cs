@@ -45,6 +45,10 @@ namespace Skyship
             bool pickDropPressed = k != null && k.eKey.wasPressedThisFrame;
             bool dropClick = m != null && m.leftButton.wasPressedThisFrame;
 
+            // E aimed at the steering wheel takes/releases the helm instead of touching cargo.
+            if (pickDropPressed && TryToggleHelm())
+                return;
+
             if (heldItem == null)
             {
                 if (pickDropPressed)
@@ -55,6 +59,17 @@ namespace Skyship
                 if (pickDropPressed || dropClick)
                     DropHeld();
             }
+        }
+
+        /// <summary>If the interaction ray hits a ShipHelm, request the helm and return true.</summary>
+        private bool TryToggleHelm()
+        {
+            if (!RaycastFromCamera(out RaycastHit hit)) return false;
+            if (hit.collider.GetComponentInParent<ShipHelm>() == null) return false;
+
+            if (NetworkManagerP2P.Instance != null)
+                NetworkManagerP2P.Instance.ToggleLocalHelm();
+            return true;
         }
 
         private bool RaycastFromCamera(out RaycastHit hit)

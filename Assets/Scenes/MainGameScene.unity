@@ -285,6 +285,67 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!1001 &872723499
+PrefabInstance:
+  m_ObjectHideFlags: 0
+  serializedVersion: 2
+  m_Modification:
+    serializedVersion: 3
+    m_TransformParent: {fileID: 0}
+    m_Modifications:
+    - target: {fileID: 1993857119116196843, guid: 120b5d24678a07340bd7eb35282ffe3c, type: 3}
+      propertyPath: m_LocalPosition.z
+      value: -0.062
+      objectReference: {fileID: 0}
+    - target: {fileID: 2633333990171111196, guid: 120b5d24678a07340bd7eb35282ffe3c, type: 3}
+      propertyPath: m_Name
+      value: ShipRoot
+      objectReference: {fileID: 0}
+    - target: {fileID: 3756472464338049285, guid: 120b5d24678a07340bd7eb35282ffe3c, type: 3}
+      propertyPath: m_LocalPosition.x
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 3756472464338049285, guid: 120b5d24678a07340bd7eb35282ffe3c, type: 3}
+      propertyPath: m_LocalPosition.y
+      value: 3.52
+      objectReference: {fileID: 0}
+    - target: {fileID: 3756472464338049285, guid: 120b5d24678a07340bd7eb35282ffe3c, type: 3}
+      propertyPath: m_LocalPosition.z
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 3756472464338049285, guid: 120b5d24678a07340bd7eb35282ffe3c, type: 3}
+      propertyPath: m_LocalRotation.w
+      value: 1
+      objectReference: {fileID: 0}
+    - target: {fileID: 3756472464338049285, guid: 120b5d24678a07340bd7eb35282ffe3c, type: 3}
+      propertyPath: m_LocalRotation.x
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 3756472464338049285, guid: 120b5d24678a07340bd7eb35282ffe3c, type: 3}
+      propertyPath: m_LocalRotation.y
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 3756472464338049285, guid: 120b5d24678a07340bd7eb35282ffe3c, type: 3}
+      propertyPath: m_LocalRotation.z
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 3756472464338049285, guid: 120b5d24678a07340bd7eb35282ffe3c, type: 3}
+      propertyPath: m_LocalEulerAnglesHint.x
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 3756472464338049285, guid: 120b5d24678a07340bd7eb35282ffe3c, type: 3}
+      propertyPath: m_LocalEulerAnglesHint.y
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 3756472464338049285, guid: 120b5d24678a07340bd7eb35282ffe3c, type: 3}
+      propertyPath: m_LocalEulerAnglesHint.z
+      value: 0
+      objectReference: {fileID: 0}
+    m_RemovedComponents: []
+    m_RemovedGameObjects: []
+    m_AddedGameObjects: []
+    m_AddedComponents: []
+  m_SourcePrefab: {fileID: 100100000, guid: 120b5d24678a07340bd7eb35282ffe3c, type: 3}
 --- !u!1 &1088370618
 GameObject:
   m_ObjectHideFlags: 0
@@ -374,6 +435,7 @@ GameObject:
   m_Component:
   - component: {fileID: 1157586044}
   - component: {fileID: 1157586043}
+  - component: {fileID: 1157586045}
   m_Layer: 0
   m_Name: Directional Light
   m_TagString: Untagged
@@ -461,6 +523,35 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &1157586045
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1157586042}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 474bcb49853aa07438625e644c072ee6, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Unity.RenderPipelines.Universal.Runtime::UnityEngine.Rendering.Universal.UniversalAdditionalLightData
+  m_UsePipelineSettings: 1
+  m_AdditionalLightsShadowResolutionTier: 2
+  m_CustomShadowLayers: 0
+  m_LightCookieSize: {x: 1, y: 1}
+  m_LightCookieOffset: {x: 0, y: 0}
+  m_SoftShadowQuality: 0
+  m_RenderingLayersMask:
+    serializedVersion: 0
+    m_Bits: 1
+  m_ShadowRenderingLayersMask:
+    serializedVersion: 0
+    m_Bits: 1
+  m_Version: 4
+  m_LightLayerMask: 1
+  m_ShadowLayerMask: 1
+  m_RenderingLayers: 1
+  m_ShadowRenderingLayers: 1
 --- !u!1 &1393251754
 GameObject:
   m_ObjectHideFlags: 0
@@ -473,6 +564,7 @@ GameObject:
   - component: {fileID: 1393251757}
   - component: {fileID: 1393251756}
   - component: {fileID: 1393251755}
+  - component: {fileID: 1393251759}
   m_Layer: 0
   m_Name: Player
   m_TagString: Untagged
@@ -553,14 +645,28 @@ Transform:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 1393251754}
   serializedVersion: 2
-  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 0, y: 1.5, z: 0}
+  m_LocalRotation: {x: 0, y: 1, z: 0, w: -0.00000004371139}
+  m_LocalPosition: {x: 0, y: 5.05, z: 9}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children:
   - {fileID: 2026450819}
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &1393251759
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1393251754}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: f83088c59466e2e458e20e09909244aa, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::Skyship.ShipRider
+  groundCheckDistance: 1.5
+  isRiding: 0
 --- !u!1 &1448885298
 GameObject:
   m_ObjectHideFlags: 0
@@ -863,3 +969,4 @@ SceneRoots:
   - {fileID: 1393251758}
   - {fileID: 1088370621}
   - {fileID: 1448885300}
+  - {fileID: 872723499}

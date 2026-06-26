@@ -1,5 +1,4 @@
 using UnityEngine;
-using UnityEngine.InputSystem;
 
 namespace Skyship
 {
@@ -10,21 +9,15 @@ namespace Skyship
     ///   - Coast/glide to a stop (decelerate)
     ///   - Build up angular speed to turn and recover from turns (yaw inertia)
     ///
-    /// Pressing the TAB key toggles between walking around (first-person controller)
-    /// and piloting the ship. When piloting, player movement and interaction are disabled,
-    /// and the player is parented to the ship deck so they ride with it perfectly.
+    /// This controller no longer reads input directly. The active pilot is decided by the
+    /// steering wheel (ShipHelm) + NetworkManagerP2P, which feeds throttle/steer in via
+    /// SetThrottle/SetSteer each frame. It is HOST-AUTHORITATIVE: on clients this component
+    /// is disabled (the ship transform is network-synced) so only the host integrates motion.
     /// </summary>
     public class ShipMovementController : MonoBehaviour
     {
         [Header("References")]
         public ShipBalanceController balance;
-
-        [Header("Piloting Setup")]
-        [Tooltip("The player walking controller. Automatically found if left empty.")]
-        public FirstPersonController playerController;
-
-        [Tooltip("The player interaction script. Automatically found if left empty.")]
-        public PlayerInteraction playerInteraction;
 
         [Header("Base Flight Speed")]
         [Tooltip("Maximum forward flight speed at 0% load.")]
@@ -45,16 +38,15 @@ namespace Skyship
         public float turnDecelerationRate = 2.5f;
 
         [Header("Runtime State (read-only)")]
-        [Tooltip("Whether the ship is currently being piloted. Toggle with Tab key.")]
+        [Tooltip("Whether the ship currently has an active pilot at the helm.")]
         public bool inputEnabled = false;
         [Tooltip("Current forward speed of the ship (meters per second).")]
         public float currentSpeed = 0f;
         [Tooltip("Current rotation speed of the ship (degrees per second).")]
         public float currentTurnSpeed = 0f;
 
-        private float throttleInput; // -1..1
-        private float steerInput;    // -1..1
-        private Transform originalPlayerParent;
+        private float throttleInput; // -1..1, set externally via SetThrottle
+        private float steerInput;    // -1..1, set externally via SetSteer
 
         private void Awake()
         {
@@ -62,48 +54,11 @@ namespace Skyship
                 balance = GetComponent<ShipBalanceController>();
         }
 
-        private void Start()
-        {
-            // Auto-detect player scripts if not manually assigned
-            if (playerController == null)
-                playerController = Object.FindAnyObjectByType<FirstPersonController>();
-            if (playerInteraction == null)
-                playerInteraction = Object.FindAnyObjectByType<PlayerInteraction>();
-
-            // Sync initial state on start (e.g. if player is active, ship flight input is disabled)
-            SyncControllerStates();
-        }
-
         private void Update()
         {
-            // Read Tab key to toggle between walking and piloting modes
-            var k = Keyboard.current;
-            if (k != null && k.tabKey.wasPressedThisFrame)
-            {
-                TogglePiloting();
-            }
-
-            if (inputEnabled)
-                ReadTestInput();
-            else
-            {
-                throttleInput = 0f;
-                steerInput = 0f;
-            }
-
+            // Throttle/steer are pushed in each frame by NetworkManagerP2P (the active pilot's
+            // input). We just integrate heavy momentum from whatever the latest values are.
             ApplyHeavyFlightPhysics();
-        }
-
-        private void ReadTestInput()
-        {
-            throttleInput = 0f;
-            steerInput = 0f;
-            var k = Keyboard.current;
-            if (k == null) return;
-            if (k.wKey.isPressed) throttleInput += 1f;
-            if (k.sKey.isPressed) throttleInput -= 1f;
-            if (k.dKey.isPressed) steerInput += 1f;
-            if (k.aKey.isPressed) steerInput -= 1f;
         }
 
         private void ApplyHeavyFlightPhysics()
@@ -158,63 +113,7 @@ namespace Skyship
             transform.Rotate(Vector3.up, currentTurnSpeed * Time.deltaTime, Space.World);
         }
 
-        /// <summary>
-        /// Switch between walk and pilot mode, updating component states and parenting.
-        /// </summary>
-        public void TogglePiloting()
-        {
-            inputEnabled = !inputEnabled;
-            SyncControllerStates();
-            Debug.Log($"[ShipMovementController] Mode toggled! Piloting: {inputEnabled}");
-        }
-
-        private void SyncControllerStates()
-        {
-            if (playerController != null)
-            {
-                // Disable walking/jumping but keep FirstPersonController enabled for mouse looking
-                playerController.allowMovement = !inputEnabled;
-
-                if (inputEnabled)
-                {
-                    // Save original player hierarchy parent
-                    originalPlayerParent = playerController.transform.parent;
-
-                    // Parent the player to the ship visual deck (or ship root) so they ride with it as it moves & tilts
-                    Transform rideParent = balance != null && balance.shipVisualRoot != null 
-                        ? balance.shipVisualRoot 
-                        : transform;
-
-                    playerController.transform.SetParent(rideParent);
-                }
-                else
-                {
-                    // Restore original player hierarchy parent
-                    playerController.transform.SetParent(originalPlayerParent);
-                }
-            }
-
-            if (playerInteraction != null)
-            {
-                // Drop any held cargo before piloting so it doesn't float in our hand while steering
-                if (inputEnabled && playerInteraction.HeldItem != null)
-                {
-                    playerInteraction.DropHeld();
-                }
-
-                // Disable looking/picking up cargo while piloting
-                playerInteraction.enabled = !inputEnabled;
-            }
-
-            // Reset inputs when pilot controls are turned off (momentum will coast down in Update)
-            if (!inputEnabled)
-            {
-                throttleInput = 0f;
-                steerInput = 0f;
-            }
-        }
-
-        // --- Public API for external seat / UI triggers ---
+        // --- Pilot input, pushed in by NetworkManagerP2P each frame (host-authoritative) ---
         public void SetThrottle(float value) => throttleInput = Mathf.Clamp(value, -1f, 1f);
         public void SetSteer(float value) => steerInput = Mathf.Clamp(value, -1f, 1f);
     }

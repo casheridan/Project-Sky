@@ -6,6 +6,8 @@ using System.Net.Sockets;
 using System.Text;
 using System.Threading;
 using UnityEngine;
+using UnityEngine.InputSystem;
+using UnityEngine.SceneManagement;
 
 namespace Skyship
 {
@@ -26,10 +28,20 @@ namespace Skyship
         public class PlayerNetworkData
         {
             public string id;
-            public Vector3 position;
+            public Vector3 position;       // world fallback (used when not aboard the ship)
             public Quaternion rotation;
             public bool isPiloting;
-            public string heldCargoName; // name of cargo box currently held (empty if none)
+            public string heldCargoName;   // name of cargo box currently held (empty if none)
+
+            // Ship-relative pose: when aboard, the receiver parents the puppet under its own
+            // ShipVisualRoot and uses these so the puppet rides the moving deck smoothly.
+            public bool onShip;
+            public Vector3 localPosition;   // ShipVisualRoot-local
+            public Quaternion localRotation;
+
+            // The active pilot relays their steering input so the host can fly the ship.
+            public float pilotThrottle;     // -1..1
+            public float pilotTurn;         // -1..1
         }
 
         [System.Serializable]
@@ -52,7 +64,9 @@ namespace Skyship
         public class NetworkPacket
         {
             public string senderId;
-            public string packetType; // "Handshake", "Disconnect", "State"
+            public string packetType; // "Handshake", "Welcome", "Disconnect", "StartGame", "State", "ClaimHelm", "ReleaseHelm"
+            public int spawnSlot; // host->client: assigned spawn index (Welcome packet)
+            public string pilotId; // host->clients (State): id of the player currently at the helm ("" = nobody)
             public List<PlayerNetworkData> players = new List<PlayerNetworkData>();
             public List<CargoNetworkData> cargo = new List<CargoNetworkData>();
             public ShipNetworkData ship = new ShipNetworkData();
@@ -78,13 +92,32 @@ namespace Skyship
         // Host-side roster of connected client player IDs (for lobby UI; populated from incoming packets).
         [System.NonSerialized] public List<string> connectedPlayerIds = new List<string>();
 
+        // Per-player spawn slot so players don't pile onto the same point in the gameplay scene.
+        // Host is always slot 0; each joining client is assigned the next free slot and told via a
+        // "Welcome" packet. Offsets are applied relative to the scene's authored Player spawn.
+        // Spread along the deck's long (Z) axis so players stay on the central spine
+        // instead of stepping off the narrow sides.
+        private static readonly Vector3[] SpawnOffsets = new Vector3[]
+        {
+            new Vector3(0f, 0f, 0f),
+            new Vector3(0f, 0f, -3f),
+            new Vector3(0f, 0f, -6f),
+            new Vector3(0f, 0f, -9f),
+        };
+        private int spawnIndex; // this peer's assigned slot (host = 0)
+
+        // Transient on-screen notice (e.g. "Host disconnected"), drawn for a few seconds.
+        private string statusBanner;
+        private float statusBannerUntil;
+
         private UdpClient udpSocket;
         private Thread receiveThread;
         private bool isRunning;
         private float nextSendTime;
 
-        // Thread-safe queue to pass received JSON data to Unity main thread
-        private ConcurrentQueue<string> incomingPackets = new ConcurrentQueue<string>();
+        // Thread-safe queue to pass received data (JSON + sender endpoint) to Unity main thread
+        private struct IncomingData { public string json; public IPEndPoint endpoint; }
+        private ConcurrentQueue<IncomingData> incomingPackets = new ConcurrentQueue<IncomingData>();
 
         // Connected peers (IP & Port endpoints) - Host only
         private HashSet<IPEndPoint> connectedPeers = new HashSet<IPEndPoint>();
@@ -92,49 +125,152 @@ namespace Skyship
 
         // Local states
         private GameObject localPlayer;
+        private ShipRider localRider;
         private Transform shipTransform;
         private Transform shipVisualRoot;
         private ShipMovementController shipMovement;
         private ShipBalanceController shipBalance;
+        private ShipPlatformArea shipPlatformArea;
+        private ShipFailureMonitor shipFailureMonitor;
+        private ShipHelm shipHelm;
+
+        // Steering-wheel piloting. The host owns the authoritative pilot lock; clients learn it
+        // from the host's State packets. Empty string = nobody is at the helm.
+        private string currentPilotId = "";
+        private bool localSeated;
+        private float remotePilotThrottle; // latest relayed input from the current (remote) pilot
+        private float remotePilotTurn;
+
+        /// <summary>Set by the pause menu to stop the local player from driving while paused.</summary>
+        [System.NonSerialized] public bool localInputSuspended;
 
         // Remote representations in our local scene
         private Dictionary<string, GameObject> remotePuppets = new Dictionary<string, GameObject>();
         private Dictionary<string, CargoItem> localCargoItems = new Dictionary<string, CargoItem>();
 
+        /// <summary>The single persistent network manager that survives scene loads.</summary>
+        public static NetworkManagerP2P Instance { get; private set; }
+
+        /// <summary>
+        /// True when this instance owns the ship simulation: the host, OR a standalone
+        /// (not networked) session. Only a CONNECTED CLIENT is non-authoritative.
+        /// </summary>
+        private bool LocalAuthority => !isConnected || isHost;
+
         private void Awake()
         {
+            // Persistent singleton: the connection must survive the menu -> gameplay scene
+            // load, otherwise the host stops hosting and clients disconnect on Start Game.
+            // Any duplicate (e.g. the one placed in the gameplay scene) destroys itself.
+            if (Instance != null && Instance != this)
+            {
+                Destroy(gameObject);
+                return;
+            }
+            Instance = this;
+            DontDestroyOnLoad(gameObject);
+
             localPlayerId = "Player_" + UnityEngine.Random.Range(1000, 9999);
+
+            SceneManager.sceneLoaded += OnSceneLoaded;
+            BindSceneObjects();
+        }
+
+        private void OnSceneLoaded(Scene scene, LoadSceneMode mode)
+        {
+            // Puppets from the previous scene were destroyed with it; drop the stale
+            // references and re-resolve this scene's Player / ship / cargo.
+            ClearPuppets();
+            BindSceneObjects();
+
+            // Spread players out using their assigned spawn slot so nobody spawns stacked on the
+            // same point (each player's puppet would otherwise sit on top of their own camera).
+            // The offset is relative to the scene's authored Player spawn; host (slot 0) stays put.
+            if (isConnected && localPlayer != null && scene.name != "MainMenuScene")
+            {
+                int slot = Mathf.Clamp(spawnIndex, 0, SpawnOffsets.Length - 1);
+                TeleportLocalPlayer(localPlayer.transform.position + SpawnOffsets[slot]);
+            }
+        }
+
+        private void TeleportLocalPlayer(Vector3 worldPos)
+        {
+            if (localPlayer == null) return;
+            // A CharacterController resists direct transform writes; toggle it around the move.
+            var cc = localPlayer.GetComponent<CharacterController>();
+            if (cc != null) cc.enabled = false;
+            localPlayer.transform.position = worldPos;
+            if (cc != null) cc.enabled = true;
+        }
+
+        /// <summary>(Re)resolve per-scene references. Safe to call in any scene (fields go null if absent).</summary>
+        private void BindSceneObjects()
+        {
             localPlayer = GameObject.Find("Player");
-            
+            localRider = localPlayer != null ? localPlayer.GetComponent<ShipRider>() : null;
+
             var ship = GameObject.Find("ShipRoot");
             if (ship != null)
             {
                 shipTransform = ship.transform;
                 shipMovement = ship.GetComponent<ShipMovementController>();
                 shipBalance = ship.GetComponent<ShipBalanceController>();
-                if (shipBalance != null)
-                    shipVisualRoot = shipBalance.shipVisualRoot;
+                shipPlatformArea = ship.GetComponent<ShipPlatformArea>();
+                shipFailureMonitor = ship.GetComponent<ShipFailureMonitor>();
+                shipVisualRoot = shipBalance != null ? shipBalance.shipVisualRoot : null;
+            }
+            else
+            {
+                shipTransform = null;
+                shipMovement = null;
+                shipBalance = null;
+                shipPlatformArea = null;
+                shipFailureMonitor = null;
+                shipVisualRoot = null;
             }
 
+            shipHelm = UnityEngine.Object.FindAnyObjectByType<ShipHelm>();
+
+            // Fresh scene: nobody is at the helm yet, and the local player isn't seated.
+            currentPilotId = "";
+            localSeated = false;
+
             // Cache cargo items by name for fast lookup
+            localCargoItems.Clear();
             var items = GameObject.FindObjectsByType<CargoItem>(FindObjectsInactive.Exclude);
             foreach (var item in items)
             {
                 localCargoItems[item.name] = item;
             }
+
+            ApplyShipAuthority();
+        }
+
+        /// <summary>
+        /// The ship's simulation runs ONLY on the host; on clients the ship transform/tilt
+        /// and cargo are network-synced, so the local controllers must be disabled or they
+        /// would fight the synced state.
+        /// </summary>
+        private void ApplyShipAuthority()
+        {
+            bool authoritative = LocalAuthority;
+            if (shipMovement != null) shipMovement.enabled = authoritative;
+            if (shipBalance != null) shipBalance.enabled = authoritative;
+            if (shipPlatformArea != null) shipPlatformArea.enabled = authoritative;
+            if (shipFailureMonitor != null) shipFailureMonitor.enabled = authoritative;
         }
 
         private void Update()
         {
             // 1. Process received data from queue on Unity main thread
-            while (incomingPackets.TryDequeue(out string json))
+            while (incomingPackets.TryDequeue(out IncomingData data))
             {
                 try
                 {
-                    NetworkPacket packet = JsonUtility.FromJson<NetworkPacket>(json);
+                    NetworkPacket packet = JsonUtility.FromJson<NetworkPacket>(data.json);
                     if (packet != null && packet.senderId != localPlayerId)
                     {
-                        ProcessPacket(packet);
+                        ProcessPacket(packet, data.endpoint);
                     }
                 }
                 catch (Exception e)
@@ -143,12 +279,119 @@ namespace Skyship
                 }
             }
 
-            // 2. Periodically send local state to connected peers
+            // 2. The authoritative instance (host or standalone) integrates the active pilot's
+            //    steering input into the ship every frame.
+            if (LocalAuthority)
+                DriveShipFromPilot();
+
+            // 3. Periodically send local state to connected peers
             if (isConnected && Time.time >= nextSendTime)
             {
                 nextSendTime = Time.time + updateRate;
                 SendState();
             }
+        }
+
+        /// <summary>Host-only: feed the current pilot's throttle/steer into the ship movement controller.</summary>
+        private void DriveShipFromPilot()
+        {
+            if (shipMovement == null) return;
+
+            float throttle = 0f, turn = 0f;
+            bool hasPilot = !string.IsNullOrEmpty(currentPilotId);
+            if (hasPilot)
+            {
+                if (currentPilotId == localPlayerId)
+                    ReadLocalPilotInput(out throttle, out turn); // host is the pilot
+                else
+                {
+                    throttle = remotePilotThrottle;               // a client is the pilot (relayed)
+                    turn = remotePilotTurn;
+                }
+            }
+
+            shipMovement.inputEnabled = hasPilot;
+            shipMovement.SetThrottle(throttle);
+            shipMovement.SetSteer(turn);
+        }
+
+        /// <summary>Read WASD as throttle/turn for whoever is locally at the helm.</summary>
+        private void ReadLocalPilotInput(out float throttle, out float turn)
+        {
+            throttle = 0f;
+            turn = 0f;
+            if (localInputSuspended) return;
+            var k = Keyboard.current;
+            if (k == null) return;
+            if (k.wKey.isPressed) throttle += 1f;
+            if (k.sKey.isPressed) throttle -= 1f;
+            if (k.dKey.isPressed) turn += 1f;
+            if (k.aKey.isPressed) turn -= 1f;
+        }
+
+        // ==========================================
+        // STEERING-WHEEL / HELM PILOTING
+        // ==========================================
+
+        /// <summary>
+        /// Called by PlayerInteraction when the local player presses E at the steering wheel.
+        /// Takes the helm if it's free, or releases it if we already hold it. The host decides
+        /// authoritatively; clients send a request and seat once the host confirms.
+        /// </summary>
+        public void ToggleLocalHelm()
+        {
+            if (shipHelm == null || localPlayer == null) return;
+
+            bool iAmPilot = currentPilotId == localPlayerId;
+
+            if (LocalAuthority)
+            {
+                // Host or standalone: decide locally.
+                if (iAmPilot) SetPilot("");
+                else if (string.IsNullOrEmpty(currentPilotId)) SetPilot(localPlayerId);
+                // else occupied by someone else -> ignore
+            }
+            else
+            {
+                if (iAmPilot)
+                {
+                    // Optimistically stand up; the host will confirm the freed helm.
+                    SendHelmRequest("ReleaseHelm");
+                    currentPilotId = "";
+                    ApplyLocalSeat(false);
+                }
+                else
+                {
+                    // Ask the host; we seat when its next State packet names us as pilot.
+                    SendHelmRequest("ClaimHelm");
+                }
+            }
+        }
+
+        private void SendHelmRequest(string type)
+        {
+            if (hostEndPoint == null) return;
+            SendPacketDirect(new NetworkPacket { senderId = localPlayerId, packetType = type }, hostEndPoint);
+        }
+
+        /// <summary>Host-authoritative: set who holds the helm and seat/unseat our local player.</summary>
+        private void SetPilot(string id)
+        {
+            currentPilotId = id ?? "";
+            remotePilotThrottle = 0f;
+            remotePilotTurn = 0f;
+            ApplyLocalSeat(currentPilotId == localPlayerId);
+            // Clients are told via the next State broadcast (statePacket.pilotId).
+        }
+
+        /// <summary>Seat or unseat the LOCAL player at the helm (idempotent).</summary>
+        private void ApplyLocalSeat(bool seated)
+        {
+            if (shipHelm == null || localPlayer == null) return;
+            if (seated == localSeated) return;
+            localSeated = seated;
+            if (seated) shipHelm.Seat(localPlayer);
+            else shipHelm.Unseat(localPlayer);
         }
 
         private void OnApplicationQuit()
@@ -158,7 +401,11 @@ namespace Skyship
 
         private void OnDestroy()
         {
+            // A duplicate that destroyed itself in Awake never started anything; skip teardown.
+            if (Instance != this) return;
+            SceneManager.sceneLoaded -= OnSceneLoaded;
             ShutdownNetwork();
+            Instance = null;
         }
 
         // ==========================================
@@ -174,6 +421,7 @@ namespace Skyship
                 isHost = true;
                 isConnected = true;
                 isRunning = true;
+                spawnIndex = 0; // host always occupies slot 0
 
                 receiveThread = new Thread(ReceiveThreadLoop);
                 receiveThread.IsBackground = true;
@@ -244,19 +492,50 @@ namespace Skyship
                 receiveThread.Join(500);
             }
 
-            // Destroy puppets
+            ClearPuppets();
+            connectedPeers.Clear();
+            connectedPlayerIds.Clear();
+            spawnIndex = 0;
+
+            isHost = false;
+            isConnected = false;
+            Debug.Log("[NetworkManager] Network shut down.");
+        }
+
+        /// <summary>
+        /// Client-side: the host has gone away. Tear down the connection, show a notice,
+        /// and return to the main menu.
+        /// </summary>
+        private void HandleHostDisconnected()
+        {
+            Debug.Log("[NetworkManager] Host disconnected. Returning to main menu.");
+            ShutdownNetwork();
+
+            Cursor.lockState = CursorLockMode.None;
+            Cursor.visible = true;
+
+            ShowBanner("Host disconnected. Returned to main menu.", 6f);
+
+            if (SceneManager.GetActiveScene().name != "MainMenuScene")
+                SceneManager.LoadScene("MainMenuScene");
+        }
+
+        /// <summary>Show a transient on-screen notice (drawn by OnGUI for <paramref name="seconds"/>).</summary>
+        public void ShowBanner(string message, float seconds = 5f)
+        {
+            statusBanner = message;
+            statusBannerUntil = Time.time + seconds;
+        }
+
+        /// <summary>Destroy all remote player puppets and forget them.</summary>
+        private void ClearPuppets()
+        {
             foreach (var kvp in remotePuppets)
             {
                 if (kvp.Value != null)
                     Destroy(kvp.Value);
             }
             remotePuppets.Clear();
-            connectedPeers.Clear();
-            connectedPlayerIds.Clear();
-
-            isHost = false;
-            isConnected = false;
-            Debug.Log("[NetworkManager] Network shut down.");
         }
 
         // ==========================================
@@ -275,21 +554,39 @@ namespace Skyship
             if (localPlayer != null)
             {
                 var pInteraction = localPlayer.GetComponent<PlayerInteraction>();
-                bool isPiloting = shipMovement != null && shipMovement.inputEnabled;
+                bool amPilot = currentPilotId == localPlayerId;
 
-                statePacket.players.Add(new PlayerNetworkData
+                var pData = new PlayerNetworkData
                 {
                     id = localPlayerId,
                     position = localPlayer.transform.position,
                     rotation = localPlayer.transform.rotation,
-                    isPiloting = isPiloting,
+                    isPiloting = amPilot,
                     heldCargoName = (pInteraction != null && pInteraction.HeldItem != null) ? pInteraction.HeldItem.name : ""
-                });
+                };
+
+                // If aboard the deck (walking or seated), send a ship-relative pose so remote
+                // puppets ride the moving deck smoothly instead of chasing world coords at 20 Hz.
+                bool aboard = shipVisualRoot != null && (amPilot || (localRider != null && localRider.IsRiding));
+                if (aboard)
+                {
+                    pData.onShip = true;
+                    pData.localPosition = shipVisualRoot.InverseTransformPoint(localPlayer.transform.position);
+                    pData.localRotation = Quaternion.Inverse(shipVisualRoot.rotation) * localPlayer.transform.rotation;
+                }
+
+                // The pilot relays their steering input so the host can fly the ship.
+                if (amPilot)
+                    ReadLocalPilotInput(out pData.pilotThrottle, out pData.pilotTurn);
+
+                statePacket.players.Add(pData);
             }
 
-            // Host is responsible for syncing loose cargo and ship kinematics
+            // Host is responsible for syncing loose cargo, ship kinematics, and the pilot lock
             if (isHost)
             {
+                statePacket.pilotId = currentPilotId;
+
                 // Sync ship positions & tilts
                 if (shipTransform != null)
                 {
@@ -386,13 +683,16 @@ namespace Skyship
                     {
                         string json = Encoding.UTF8.GetString(bytes);
 
+                        // Clone the endpoint: senderEP is reused by the next Receive call.
+                        IPEndPoint from = new IPEndPoint(senderEP.Address, senderEP.Port);
+
                         // Host tracks sender's endpoint for peer mapping
                         if (isHost)
                         {
-                            connectedPeers.Add(senderEP);
+                            connectedPeers.Add(from);
                         }
 
-                        incomingPackets.Enqueue(json);
+                        incomingPackets.Enqueue(new IncomingData { json = json, endpoint = from });
                     }
                 }
                 catch (SocketException)
@@ -413,17 +713,65 @@ namespace Skyship
         // 4. MAIN THREAD DATA PROCESSING & STATE SYNC
         // ==========================================
 
-        private void ProcessPacket(NetworkPacket packet)
+        private void ProcessPacket(NetworkPacket packet, IPEndPoint from)
         {
             if (packet.packetType == "Disconnect")
             {
-                connectedPlayerIds.Remove(packet.senderId);
-                DestroyPuppet(packet.senderId);
+                if (isHost)
+                {
+                    // A client left: drop it from the roster and remove its puppet.
+                    connectedPlayerIds.Remove(packet.senderId);
+                    DestroyPuppet(packet.senderId);
+                    // If they were piloting, free the helm.
+                    if (currentPilotId == packet.senderId)
+                        SetPilot("");
+                }
+                else
+                {
+                    // In this star topology a client only ever hears from the host, so any
+                    // Disconnect means the host quit — kick everyone back to the main menu.
+                    HandleHostDisconnected();
+                }
+                return;
+            }
+
+            // Helm claim/release requests are host-authoritative (clients ask, host decides).
+            if (packet.packetType == "ClaimHelm")
+            {
+                if (isHost && string.IsNullOrEmpty(currentPilotId))
+                    SetPilot(packet.senderId);
+                return;
+            }
+            if (packet.packetType == "ReleaseHelm")
+            {
+                if (isHost && currentPilotId == packet.senderId)
+                    SetPilot("");
+                return;
+            }
+
+            if (packet.packetType == "Welcome")
+            {
+                // Host assigned us a spawn slot. Store it (and apply now if we're already in-game).
+                spawnIndex = packet.spawnSlot;
+                Debug.Log($"[NetworkClient] Host assigned spawn slot {spawnIndex}.");
+                if (localPlayer != null && SceneManager.GetActiveScene().name != "MainMenuScene")
+                {
+                    int slot = Mathf.Clamp(spawnIndex, 0, SpawnOffsets.Length - 1);
+                    // Re-place relative to the authored spawn origin (slot 0 offset is the origin).
+                    TeleportLocalPlayer(new Vector3(0f, localPlayer.transform.position.y, 0f) + SpawnOffsets[slot]);
+                }
                 return;
             }
 
             if (packet.packetType == "StartGame")
             {
+                // The HOST must never act on a StartGame packet — it already loaded the scene
+                // itself, and reloading here would tear the just-loaded gameplay scene back down.
+                if (isHost)
+                {
+                    Debug.LogWarning($"[NetworkManager] HOST received a StartGame packet (from '{packet.senderId}') and IGNORED it. This would have reloaded the scene.");
+                    return;
+                }
                 Debug.Log("[NetworkClient] Received StartGame notice from Host. Loading gameplay scene...");
                 // The host sends the scene name in the senderId field (or defaults to MainGameScene)
                 string sceneName = string.IsNullOrEmpty(packet.senderId) ? "MainGameScene" : packet.senderId;
@@ -436,7 +784,29 @@ namespace Skyship
             if (isHost && !connectedPlayerIds.Contains(packet.senderId))
             {
                 connectedPlayerIds.Add(packet.senderId);
-                Debug.Log($"[NetworkManager] Player joined lobby: {packet.senderId}");
+                // Assign the next free spawn slot (host is 0; first client 1, etc.) and tell them.
+                int assignedSlot = Mathf.Clamp(connectedPlayerIds.Count, 0, SpawnOffsets.Length - 1);
+                if (from != null)
+                {
+                    SendPacketDirect(new NetworkPacket
+                    {
+                        senderId = localPlayerId,
+                        packetType = "Welcome",
+                        spawnSlot = assignedSlot
+                    }, from);
+                }
+                Debug.Log($"[NetworkManager] Player joined lobby: {packet.senderId} (spawn slot {assignedSlot})");
+            }
+
+            // Client: learn the authoritative pilot lock from the host and seat/unseat locally.
+            if (!isHost)
+            {
+                string newPilot = packet.pilotId ?? "";
+                if (newPilot != currentPilotId)
+                {
+                    currentPilotId = newPilot;
+                    ApplyLocalSeat(currentPilotId == localPlayerId);
+                }
             }
 
             // Sync other player positions & pickups
@@ -444,12 +814,32 @@ namespace Skyship
             {
                 if (pData.id == localPlayerId) continue; // safety skip
 
+                // Host: remember the current (remote) pilot's relayed steering input.
+                if (isHost && pData.id == currentPilotId)
+                {
+                    remotePilotThrottle = pData.pilotThrottle;
+                    remotePilotTurn = pData.pilotTurn;
+                }
+
                 GameObject puppet = GetOrCreatePuppet(pData.id);
-                
-                // Interpolate or smoothly snap puppet position/rotation
-                // If remote is piloting, they ride on the ship; let's snap them to the parent transform if parented
-                puppet.transform.position = Vector3.Lerp(puppet.transform.position, pData.position, 0.4f);
-                puppet.transform.rotation = Quaternion.Slerp(puppet.transform.rotation, pData.rotation, 0.4f);
+
+                if (pData.onShip && shipVisualRoot != null)
+                {
+                    // Ride the deck: parent under our ShipVisualRoot and interpolate only the small
+                    // local offset, so the deck's own motion carries the puppet for free.
+                    if (puppet.transform.parent != shipVisualRoot)
+                        puppet.transform.SetParent(shipVisualRoot, true);
+                    puppet.transform.localPosition = Vector3.Lerp(puppet.transform.localPosition, pData.localPosition, 0.4f);
+                    puppet.transform.localRotation = Quaternion.Slerp(puppet.transform.localRotation, pData.localRotation, 0.4f);
+                }
+                else
+                {
+                    // Off the ship (or we have no ship): plain world-space interpolation.
+                    if (puppet.transform.parent != null)
+                        puppet.transform.SetParent(null, true);
+                    puppet.transform.position = Vector3.Lerp(puppet.transform.position, pData.position, 0.4f);
+                    puppet.transform.rotation = Quaternion.Slerp(puppet.transform.rotation, pData.rotation, 0.4f);
+                }
 
                 // Handle visual parent of the cargo if remote is holding it
                 SyncRemoteCargoHold(pData.id, pData.heldCargoName);
@@ -498,19 +888,19 @@ namespace Skyship
                 if (puppet != null) return puppet;
             }
 
-            // Create a clean primitive sphere representing the remote player
-            GameObject pGO = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+            // Create a player-shaped capsule body representing the remote player
+            GameObject pGO = GameObject.CreatePrimitive(PrimitiveType.Capsule);
             pGO.name = "Puppet_" + id;
-            
+
             // Remove collider so they don't push local players
             var col = pGO.GetComponent<Collider>();
             if (col != null) Destroy(col);
 
-            // Add a smaller child cylinder representing a head visor for orientation direction
+            // Add a small child cylinder near the head as a facing/orientation indicator
             GameObject visor = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
             visor.name = "Visor";
             visor.transform.SetParent(pGO.transform);
-            visor.transform.localPosition = new Vector3(0f, 0.2f, 0.4f);
+            visor.transform.localPosition = new Vector3(0f, 0.6f, 0.4f);
             visor.transform.localScale = new Vector3(0.2f, 0.2f, 0.4f);
             visor.transform.localRotation = Quaternion.Euler(90f, 0f, 0f);
             var vCol = visor.GetComponent<Collider>();
@@ -519,23 +909,26 @@ namespace Skyship
             // Paint puppet orange
             var renderer = pGO.GetComponent<Renderer>();
             if (renderer != null)
-            {
-                Material m = new Material(Shader.Find("Standard"));
-                m.color = puppetColor;
-                renderer.sharedMaterial = m;
-            }
+                renderer.sharedMaterial = MakePuppetMaterial(puppetColor);
 
             var visorRenderer = visor.GetComponent<Renderer>();
             if (visorRenderer != null)
-            {
-                Material m = new Material(Shader.Find("Standard"));
-                m.color = Color.black;
-                visorRenderer.sharedMaterial = m;
-            }
+                visorRenderer.sharedMaterial = MakePuppetMaterial(Color.black);
 
             remotePuppets[id] = pGO;
             Debug.Log($"[NetworkManager] Spawned remote player puppet for client {id}.");
             return pGO;
+        }
+
+        /// <summary>Creates a solid-colored material that works under URP (falls back to built-in if needed).</summary>
+        private static Material MakePuppetMaterial(Color color)
+        {
+            Shader shader = Shader.Find("Universal Render Pipeline/Lit");
+            if (shader == null) shader = Shader.Find("Standard"); // built-in RP fallback
+            Material m = new Material(shader);
+            m.color = color;
+            if (m.HasProperty("_BaseColor")) m.SetColor("_BaseColor", color); // URP main color
+            return m;
         }
 
         private void DestroyPuppet(string id)
@@ -587,6 +980,19 @@ namespace Skyship
 
         private void OnGUI()
         {
+            // Transient notice banner (e.g. "Host disconnected"), shown regardless of debug HUD.
+            if (!string.IsNullOrEmpty(statusBanner) && Time.time < statusBannerUntil)
+            {
+                const float bw = 460f, bh = 40f;
+                var prev = GUI.skin.box.alignment;
+                var prevFont = GUI.skin.box.fontSize;
+                GUI.skin.box.alignment = TextAnchor.MiddleCenter;
+                GUI.skin.box.fontSize = 16;
+                GUI.Box(new Rect((Screen.width - bw) * 0.5f, 24f, bw, bh), statusBanner);
+                GUI.skin.box.alignment = prev;
+                GUI.skin.box.fontSize = prevFont;
+            }
+
             if (!showImguiDebugHUD) return;
 
             // Place network overlay top-right corner

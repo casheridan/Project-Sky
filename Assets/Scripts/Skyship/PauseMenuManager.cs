@@ -23,14 +23,12 @@ namespace Skyship
 
         private FirstPersonController playerController;
         private PlayerInteraction playerInteraction;
-        private ShipMovementController shipMovement;
         private NetworkManagerP2P networkManager;
 
         private void Start()
         {
             playerController = Object.FindAnyObjectByType<FirstPersonController>();
             playerInteraction = Object.FindAnyObjectByType<PlayerInteraction>();
-            shipMovement = Object.FindAnyObjectByType<ShipMovementController>();
             networkManager = Object.FindAnyObjectByType<NetworkManagerP2P>();
         }
 
@@ -49,7 +47,11 @@ namespace Skyship
             // mouse-look, so the camera doesn't spin while clicking the menu.
             if (playerController != null) playerController.enabled = !isPaused;
             if (playerInteraction != null) playerInteraction.enabled = !isPaused;
-            if (shipMovement != null) shipMovement.enabled = !isPaused;
+
+            // Stop the local player from driving the ship while paused. We suspend the pilot
+            // INPUT (not the ship component) so we don't accidentally re-enable the
+            // host-authoritative ShipMovementController on a client, where it must stay off.
+            if (networkManager != null) networkManager.localInputSuspended = isPaused;
 
             // Free the cursor so the player can click the menu; re-lock on resume.
             Cursor.lockState = isPaused ? CursorLockMode.None : CursorLockMode.Locked;
