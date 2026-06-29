@@ -3,6 +3,21 @@ using UnityEngine;
 namespace Skyship
 {
     /// <summary>
+    /// Broad loot/resource type. Islands yield raw resources (plus occasional fuel/treasure);
+    /// derelict ships yield repair cargo, special cargo, fuel, and treasure. Back at base these
+    /// get forged into usable cargo, fuel, and upgrades (economy is future work).
+    /// </summary>
+    public enum CargoCategory
+    {
+        Generic,
+        RawResource,
+        Fuel,
+        Treasure,
+        RepairCargo,
+        SpecialCargo
+    }
+
+    /// <summary>
     /// An interactable salvage item the player can carry and drop. Physics are ON
     /// while loose (including gravity, sliding, and rolling). Its weight is
     /// dynamically integrated into the ship's balance based on its exact local
@@ -13,6 +28,9 @@ namespace Skyship
     {
         [Header("Identity")]
         public string itemName = "Crate";
+
+        [Tooltip("Loot/resource category. Drives where it spawns and what it forges into.")]
+        public CargoCategory category = CargoCategory.Generic;
 
         [Tooltip("Weight in arbitrary units. Drives ship balance & load.")]
         public float weight = 10f;

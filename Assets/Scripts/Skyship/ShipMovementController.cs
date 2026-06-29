@@ -21,21 +21,27 @@ namespace Skyship
 
         [Header("Base Flight Speed")]
         [Tooltip("Maximum forward flight speed at 0% load.")]
-        public float baseSpeed = 8f;
+        public float baseSpeed = 6f;
         [Tooltip("Maximum turning speed at 0% load (degrees per second).")]
-        public float baseTurnSpeed = 25f;
+        public float baseTurnSpeed = 42f;
+        [Tooltip("Maximum vertical climb/descend speed at 0% load (meters per second).")]
+        public float baseClimbSpeed = 6f;
 
         [Header("Heavy Momentum & Inertia Tuning")]
         [Tooltip("How fast the ship builds forward speed (acceleration). Lower = heavier feel.")]
-        public float accelerationRate = 1.0f;
+        public float accelerationRate = 2.0f;
         [Tooltip("How fast the ship slows down when throttle is zero (passive glide drag). Lower = glides longer.")]
-        public float decelerationRate = 0.5f;
+        public float decelerationRate = 0.9f;
         [Tooltip("How fast the ship slows down when active reverse throttle is applied (active brake).")]
-        public float brakeRate = 2.0f;
+        public float brakeRate = 3.0f;
         [Tooltip("How fast the ship builds up turning speed (turn inertia). Lower = heavier turning feel.")]
-        public float turnAccelerationRate = 1.5f;
+        public float turnAccelerationRate = 3.0f;
         [Tooltip("How fast the ship stops rotating when steering input is released (yaw friction).")]
-        public float turnDecelerationRate = 2.5f;
+        public float turnDecelerationRate = 4.0f;
+        [Tooltip("How fast the ship builds vertical climb speed (lift inertia). Lower = heavier feel.")]
+        public float climbAccelerationRate = 2.5f;
+        [Tooltip("How fast vertical speed bleeds off when lift input is released (hover settle).")]
+        public float climbDecelerationRate = 3.5f;
 
         [Header("Runtime State (read-only)")]
         [Tooltip("Whether the ship currently has an active pilot at the helm.")]
@@ -44,9 +50,12 @@ namespace Skyship
         public float currentSpeed = 0f;
         [Tooltip("Current rotation speed of the ship (degrees per second).")]
         public float currentTurnSpeed = 0f;
+        [Tooltip("Current vertical speed of the ship (meters per second, + = climbing).")]
+        public float currentClimbSpeed = 0f;
 
         private float throttleInput; // -1..1, set externally via SetThrottle
         private float steerInput;    // -1..1, set externally via SetSteer
+        private float liftInput;     // -1..1, set externally via SetLift (+ = climb)
 
         private void Awake()
         {
@@ -111,10 +120,29 @@ namespace Skyship
 
             // Rotate the ship around its yaw axis based on current turn speed
             transform.Rotate(Vector3.up, currentTurnSpeed * Time.deltaTime, Space.World);
+
+            // ----------------------------------------------------
+            // 3. VERTICAL MOMENTUM (CLIMB / DESCEND)
+            // ----------------------------------------------------
+            // Always world-up, never affected by visual tilt. Heavy load slows the climb.
+            float targetClimbSpeed = liftInput * baseClimbSpeed * speedMult;
+
+            if (Mathf.Abs(liftInput) > 0.05f)
+            {
+                currentClimbSpeed = Mathf.MoveTowards(currentClimbSpeed, targetClimbSpeed, climbAccelerationRate * Time.deltaTime);
+            }
+            else
+            {
+                // Settle to a hover when no lift input is applied
+                currentClimbSpeed = Mathf.MoveTowards(currentClimbSpeed, 0f, climbDecelerationRate * Time.deltaTime);
+            }
+
+            transform.position += Vector3.up * (currentClimbSpeed * Time.deltaTime);
         }
 
         // --- Pilot input, pushed in by NetworkManagerP2P each frame (host-authoritative) ---
         public void SetThrottle(float value) => throttleInput = Mathf.Clamp(value, -1f, 1f);
         public void SetSteer(float value) => steerInput = Mathf.Clamp(value, -1f, 1f);
+        public void SetLift(float value) => liftInput = Mathf.Clamp(value, -1f, 1f);
     }
 }

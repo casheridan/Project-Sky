@@ -468,16 +468,20 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::Skyship.ShipMovementController
   balance: {fileID: 4812550185302196015}
-  baseSpeed: 4
-  baseTurnSpeed: 30
-  accelerationRate: 1
-  decelerationRate: 0.5
-  brakeRate: 2
-  turnAccelerationRate: 1.5
-  turnDecelerationRate: 2.5
+  baseSpeed: 6
+  baseTurnSpeed: 42
+  baseClimbSpeed: 6
+  accelerationRate: 2
+  decelerationRate: 1.3
+  brakeRate: 3
+  turnAccelerationRate: 4
+  turnDecelerationRate: 8
+  climbAccelerationRate: 2.5
+  climbDecelerationRate: 3.5
   inputEnabled: 0
   currentSpeed: 0
   currentTurnSpeed: 0
+  currentClimbSpeed: 0
 --- !u!114 &8531822878626824784
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -562,7 +566,7 @@ Transform:
   m_GameObject: {fileID: 2653983348345356704}
   serializedVersion: 2
   m_LocalRotation: {x: 0.7071068, y: 0, z: 0, w: 0.7071068}
-  m_LocalPosition: {x: 0, y: 1.15, z: 0.05}
+  m_LocalPosition: {x: 0, y: 1.15, z: -0.062}
   m_LocalScale: {x: 0.5, y: 0.06, z: 0.5}
   m_ConstrainProportionsScale: 0
   m_Children: []

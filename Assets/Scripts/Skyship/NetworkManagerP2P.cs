@@ -42,6 +42,7 @@ namespace Skyship
             // The active pilot relays their steering input so the host can fly the ship.
             public float pilotThrottle;     // -1..1
             public float pilotTurn;         // -1..1
+            public float pilotLift;         // -1..1 (+ = climb)
         }
 
         [System.Serializable]
@@ -66,6 +67,7 @@ namespace Skyship
             public string senderId;
             public string packetType; // "Handshake", "Welcome", "Disconnect", "StartGame", "State", "ClaimHelm", "ReleaseHelm"
             public int spawnSlot; // host->client: assigned spawn index (Welcome packet)
+            public int worldSeed; // host->clients (StartGame): seed for deterministic world generation
             public string pilotId; // host->clients (State): id of the player currently at the helm ("" = nobody)
             public List<PlayerNetworkData> players = new List<PlayerNetworkData>();
             public List<CargoNetworkData> cargo = new List<CargoNetworkData>();
@@ -88,6 +90,9 @@ namespace Skyship
         public bool isHost;
         public bool isConnected;
         public string localPlayerId;
+
+        [Tooltip("Seed for procedural world generation. Host picks it and broadcasts it on Start Game; clients receive it so every peer generates the identical world.")]
+        public int worldSeed;
 
         // Host-side roster of connected client player IDs (for lobby UI; populated from incoming packets).
         [System.NonSerialized] public List<string> connectedPlayerIds = new List<string>();
@@ -140,6 +145,7 @@ namespace Skyship
         private bool localSeated;
         private float remotePilotThrottle; // latest relayed input from the current (remote) pilot
         private float remotePilotTurn;
+        private float remotePilotLift;
 
         /// <summary>Set by the pause menu to stop the local player from driving while paused.</summary>
         [System.NonSerialized] public bool localInputSuspended;
@@ -156,6 +162,9 @@ namespace Skyship
         /// (not networked) session. Only a CONNECTED CLIENT is non-authoritative.
         /// </summary>
         private bool LocalAuthority => !isConnected || isHost;
+
+        /// <summary>Public alias of authority for world/cargo systems (e.g. WorldGenerator).</summary>
+        public bool IsWorldAuthority => LocalAuthority;
 
         private void Awake()
         {
@@ -260,6 +269,18 @@ namespace Skyship
             if (shipFailureMonitor != null) shipFailureMonitor.enabled = authoritative;
         }
 
+        /// <summary>
+        /// Re-scan the scene for CargoItems and rebuild the by-name lookup. Call this after cargo is
+        /// spawned at runtime (e.g. by WorldGenerator) so the host syncs it and clients can resolve it.
+        /// </summary>
+        public void RefreshCargoRegistry()
+        {
+            localCargoItems.Clear();
+            var items = GameObject.FindObjectsByType<CargoItem>(FindObjectsInactive.Exclude);
+            foreach (var item in items)
+                localCargoItems[item.name] = item;
+        }
+
         private void Update()
         {
             // 1. Process received data from queue on Unity main thread
@@ -297,29 +318,35 @@ namespace Skyship
         {
             if (shipMovement == null) return;
 
-            float throttle = 0f, turn = 0f;
+            float throttle = 0f, turn = 0f, lift = 0f;
             bool hasPilot = !string.IsNullOrEmpty(currentPilotId);
             if (hasPilot)
             {
                 if (currentPilotId == localPlayerId)
-                    ReadLocalPilotInput(out throttle, out turn); // host is the pilot
+                    ReadLocalPilotInput(out throttle, out turn, out lift); // host is the pilot
                 else
                 {
                     throttle = remotePilotThrottle;               // a client is the pilot (relayed)
                     turn = remotePilotTurn;
+                    lift = remotePilotLift;
                 }
             }
 
             shipMovement.inputEnabled = hasPilot;
             shipMovement.SetThrottle(throttle);
             shipMovement.SetSteer(turn);
+            shipMovement.SetLift(lift);
         }
 
-        /// <summary>Read WASD as throttle/turn for whoever is locally at the helm.</summary>
-        private void ReadLocalPilotInput(out float throttle, out float turn)
+        /// <summary>
+        /// Read flight controls for whoever is locally at the helm: WASD = throttle/turn,
+        /// Space = climb, Left Shift = descend.
+        /// </summary>
+        private void ReadLocalPilotInput(out float throttle, out float turn, out float lift)
         {
             throttle = 0f;
             turn = 0f;
+            lift = 0f;
             if (localInputSuspended) return;
             var k = Keyboard.current;
             if (k == null) return;
@@ -327,6 +354,8 @@ namespace Skyship
             if (k.sKey.isPressed) throttle -= 1f;
             if (k.dKey.isPressed) turn += 1f;
             if (k.aKey.isPressed) turn -= 1f;
+            if (k.spaceKey.isPressed) lift += 1f;
+            if (k.leftShiftKey.isPressed) lift -= 1f;
         }
 
         // ==========================================
@@ -380,6 +409,7 @@ namespace Skyship
             currentPilotId = id ?? "";
             remotePilotThrottle = 0f;
             remotePilotTurn = 0f;
+            remotePilotLift = 0f;
             ApplyLocalSeat(currentPilotId == localPlayerId);
             // Clients are told via the next State broadcast (statePacket.pilotId).
         }
@@ -577,7 +607,7 @@ namespace Skyship
 
                 // The pilot relays their steering input so the host can fly the ship.
                 if (amPilot)
-                    ReadLocalPilotInput(out pData.pilotThrottle, out pData.pilotTurn);
+                    ReadLocalPilotInput(out pData.pilotThrottle, out pData.pilotTurn, out pData.pilotLift);
 
                 statePacket.players.Add(pData);
             }
@@ -639,12 +669,16 @@ namespace Skyship
         /// </summary>
         public void SendStartGameNotice(string sceneName)
         {
+            // Host picks the world seed for this session; every peer generates the same world from it.
+            worldSeed = UnityEngine.Random.Range(1, int.MaxValue);
+
             if (isHost && isConnected)
             {
                 NetworkPacket startPacket = new NetworkPacket
                 {
                     senderId = sceneName, // use senderId to pass the scene name
-                    packetType = "StartGame"
+                    packetType = "StartGame",
+                    worldSeed = worldSeed
                 };
                 BroadcastPacket(startPacket);
             }
@@ -773,6 +807,8 @@ namespace Skyship
                     return;
                 }
                 Debug.Log("[NetworkClient] Received StartGame notice from Host. Loading gameplay scene...");
+                // Adopt the host's world seed BEFORE loading so our WorldGenerator builds the same world.
+                worldSeed = packet.worldSeed;
                 // The host sends the scene name in the senderId field (or defaults to MainGameScene)
                 string sceneName = string.IsNullOrEmpty(packet.senderId) ? "MainGameScene" : packet.senderId;
                 UnityEngine.SceneManagement.SceneManager.LoadScene(sceneName);
@@ -819,6 +855,7 @@ namespace Skyship
                 {
                     remotePilotThrottle = pData.pilotThrottle;
                     remotePilotTurn = pData.pilotTurn;
+                    remotePilotLift = pData.pilotLift;
                 }
 
                 GameObject puppet = GetOrCreatePuppet(pData.id);
