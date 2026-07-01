@@ -2034,10 +2034,6 @@ PrefabInstance:
     serializedVersion: 3
     m_TransformParent: {fileID: 0}
     m_Modifications:
-    - target: {fileID: 1993857119116196843, guid: 120b5d24678a07340bd7eb35282ffe3c, type: 3}
-      propertyPath: m_LocalPosition.z
-      value: -0.062
-      objectReference: {fileID: 0}
     - target: {fileID: 2633333990171111196, guid: 120b5d24678a07340bd7eb35282ffe3c, type: 3}
       propertyPath: m_Name
       value: ShipRoot
