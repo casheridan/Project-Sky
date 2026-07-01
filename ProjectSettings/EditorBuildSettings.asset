@@ -17,6 +17,9 @@ EditorBuildSettings:
   - enabled: 1
     path: Assets/Scenes/WorldScene.unity
     guid: 2b28ec9a64dc3064cb70686caae8d29e
+  - enabled: 1
+    path: Assets/Scenes/HubScene.unity
+    guid: b0ccf1961fc84cc6bdd171b48458ed52
   m_configObjects:
     com.unity.dt.app-ui: {fileID: 11400000, guid: 1b1c20d82303e4b5781c3ef50ac1449f, type: 2}
     com.unity.input.settings.actions: {fileID: -944628639613478452, guid: 052faaac586de48259a63d0c4782560b, type: 3}

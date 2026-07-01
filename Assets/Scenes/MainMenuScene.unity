@@ -2832,7 +2832,7 @@ MonoBehaviour:
   ipInputField: {fileID: 1487870334}
   volumeSlider: {fileID: 418361768}
   sensitivitySlider: {fileID: 836136040}
-  gameplaySceneName: WorldScene
+  gameplaySceneName: HubScene
 --- !u!4 &1238639178
 Transform:
   m_ObjectHideFlags: 0

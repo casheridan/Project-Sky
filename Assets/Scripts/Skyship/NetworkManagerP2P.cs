@@ -69,6 +69,7 @@ namespace Skyship
             public int spawnSlot; // host->client: assigned spawn index (Welcome packet)
             public int worldSeed; // host->clients (StartGame): seed for deterministic world generation
             public string pilotId; // host->clients (State): id of the player currently at the helm ("" = nobody)
+            public float hubCountdown = -1f; // host->clients (State): seconds left on the hub launch countdown (-1 = not counting)
             public List<PlayerNetworkData> players = new List<PlayerNetworkData>();
             public List<CargoNetworkData> cargo = new List<CargoNetworkData>();
             public ShipNetworkData ship = new ShipNetworkData();
@@ -149,6 +150,12 @@ namespace Skyship
 
         /// <summary>Set by the pause menu to stop the local player from driving while paused.</summary>
         [System.NonSerialized] public bool localInputSuspended;
+
+        // Player hub launch state. The host owns the countdown; clients receive it in State packets
+        // (for display) via HubController. -1 = no countdown running.
+        [System.NonSerialized] public float hubCountdown = -1f;
+        // Host-side: last-known "standing on the ship deck" flag for each connected client (by id).
+        private readonly Dictionary<string, bool> playerAboard = new Dictionary<string, bool>();
 
         // Remote representations in our local scene
         private Dictionary<string, GameObject> remotePuppets = new Dictionary<string, GameObject>();
@@ -243,6 +250,10 @@ namespace Skyship
             // Fresh scene: nobody is at the helm yet, and the local player isn't seated.
             currentPilotId = "";
             localSeated = false;
+
+            // Fresh scene: no hub launch is in progress and no aboard flags carry over.
+            hubCountdown = -1f;
+            playerAboard.Clear();
 
             // Cache cargo items by name for fast lookup
             localCargoItems.Clear();
@@ -616,6 +627,7 @@ namespace Skyship
             if (isHost)
             {
                 statePacket.pilotId = currentPilotId;
+                statePacket.hubCountdown = hubCountdown; // relay the hub launch countdown to clients
 
                 // Sync ship positions & tilts
                 if (shipTransform != null)
@@ -682,6 +694,42 @@ namespace Skyship
                 };
                 BroadcastPacket(startPacket);
             }
+        }
+
+        // ==========================================
+        // PLAYER HUB → WORLD LAUNCH
+        // ==========================================
+
+        /// <summary>
+        /// Host/solo check: is every player currently standing on the ship deck? Used by HubController
+        /// to decide when to start the launch countdown. The local (host) player is checked via its
+        /// ShipRider; each connected client via the onShip flag from its latest State packet.
+        /// </summary>
+        public bool AreAllPlayersAboard()
+        {
+            if (!LocalAuthority) return false; // only the authority decides launches
+
+            bool localAboard = localRider != null && localRider.IsRiding;
+            if (!localAboard) return false;
+
+            foreach (string id in connectedPlayerIds)
+            {
+                if (!playerAboard.TryGetValue(id, out bool aboard) || !aboard)
+                    return false;
+            }
+            return true;
+        }
+
+        /// <summary>
+        /// Host/solo: leave the hub and load the procedural world, picking + broadcasting a fresh world
+        /// seed so every peer generates the identical world (clients load it via the StartGame packet).
+        /// </summary>
+        public void LaunchToWorld(string sceneName)
+        {
+            if (!LocalAuthority) return;
+            SendStartGameNotice(sceneName); // picks the world seed and (if connected) broadcasts StartGame
+            hubCountdown = -1f;
+            SceneManager.LoadScene(sceneName);
         }
 
         private void SendPacketDirect(NetworkPacket packet, IPEndPoint target)
@@ -755,6 +803,7 @@ namespace Skyship
                 {
                     // A client left: drop it from the roster and remove its puppet.
                     connectedPlayerIds.Remove(packet.senderId);
+                    playerAboard.Remove(packet.senderId);
                     DestroyPuppet(packet.senderId);
                     // If they were piloting, free the helm.
                     if (currentPilotId == packet.senderId)
@@ -843,6 +892,9 @@ namespace Skyship
                     currentPilotId = newPilot;
                     ApplyLocalSeat(currentPilotId == localPlayerId);
                 }
+
+                // Mirror the host's hub launch countdown so the client HUD can show it.
+                hubCountdown = packet.hubCountdown;
             }
 
             // Sync other player positions & pickups
@@ -857,6 +909,10 @@ namespace Skyship
                     remotePilotTurn = pData.pilotTurn;
                     remotePilotLift = pData.pilotLift;
                 }
+
+                // Host: track whether each client is standing on the ship deck (for the hub launch).
+                if (isHost)
+                    playerAboard[pData.id] = pData.onShip;
 
                 GameObject puppet = GetOrCreatePuppet(pData.id);
 
