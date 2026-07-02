@@ -51,6 +51,14 @@ namespace Skyship
             public string name;
             public Vector3 position;
             public Quaternion rotation;
+            public int category; // CargoCategory as int — lets clients spawn crates they missed (harvest drops)
+        }
+
+        [System.Serializable]
+        public class NodeNetworkData
+        {
+            public string name;    // deterministic node id (WNode_0000)
+            public int remaining;  // yield left — rides in every State packet for lost-packet self-healing
         }
 
         [System.Serializable]
@@ -65,13 +73,24 @@ namespace Skyship
         public class NetworkPacket
         {
             public string senderId;
-            public string packetType; // "Handshake", "Welcome", "Disconnect", "StartGame", "State", "ClaimHelm", "ReleaseHelm"
+            public string packetType; // "Handshake", "Welcome", "Disconnect", "StartGame", "State", "ClaimHelm", "ReleaseHelm", "HarvestRequest", "HarvestResult"
             public int spawnSlot; // host->client: assigned spawn index (Welcome packet)
             public int worldSeed; // host->clients (StartGame): seed for deterministic world generation
             public string pilotId; // host->clients (State): id of the player currently at the helm ("" = nobody)
             public float hubCountdown = -1f; // host->clients (State): seconds left on the hub launch countdown (-1 = not counting)
+
+            // Resource-node harvesting (client->host "HarvestRequest", host->clients "HarvestResult").
+            public string harvestNodeId;
+            public Vector3 harvestPlayerPos;     // request: where the harvester stands (drop point is computed near them)
+            public Vector3 harvestPlayerForward; // request: where they're looking
+            public int harvestRemaining;         // result: node yield left after this harvest
+            public string harvestCargoName;      // result: deterministic name of the spawned crate
+            public int harvestCargoCategory;     // result: CargoCategory as int
+            public Vector3 harvestSpawnPos;      // result: where the crate spawned
+
             public List<PlayerNetworkData> players = new List<PlayerNetworkData>();
             public List<CargoNetworkData> cargo = new List<CargoNetworkData>();
+            public List<NodeNetworkData> nodes = new List<NodeNetworkData>(); // host State: node yields (self-healing)
             public ShipNetworkData ship = new ShipNetworkData();
         }
 
@@ -165,6 +184,8 @@ namespace Skyship
         // Remote representations in our local scene
         private Dictionary<string, GameObject> remotePuppets = new Dictionary<string, GameObject>();
         private Dictionary<string, CargoItem> localCargoItems = new Dictionary<string, CargoItem>();
+        private Dictionary<string, ResourceNode> localNodes = new Dictionary<string, ResourceNode>();
+        private WorldGenerator worldGenerator; // spawns harvest crates identically on every peer
 
         /// <summary>The single persistent network manager that survives scene loads.</summary>
         public static NetworkManagerP2P Instance { get; private set; }
@@ -260,13 +281,9 @@ namespace Skyship
             hubCountdown = -1f;
             playerAboard.Clear();
 
-            // Cache cargo items by name for fast lookup
-            localCargoItems.Clear();
-            var items = GameObject.FindObjectsByType<CargoItem>(FindObjectsInactive.Exclude);
-            foreach (var item in items)
-            {
-                localCargoItems[item.name] = item;
-            }
+            // Cache cargo items / resource nodes by name for fast lookup
+            worldGenerator = UnityEngine.Object.FindAnyObjectByType<WorldGenerator>();
+            RefreshCargoRegistry();
 
             ApplyShipAuthority();
         }
@@ -286,8 +303,9 @@ namespace Skyship
         }
 
         /// <summary>
-        /// Re-scan the scene for CargoItems and rebuild the by-name lookup. Call this after cargo is
-        /// spawned at runtime (e.g. by WorldGenerator) so the host syncs it and clients can resolve it.
+        /// Re-scan the scene for CargoItems and ResourceNodes and rebuild the by-name lookups. Call
+        /// this after they're spawned at runtime (e.g. by WorldGenerator) so the host syncs them and
+        /// clients can resolve them.
         /// </summary>
         public void RefreshCargoRegistry()
         {
@@ -295,6 +313,90 @@ namespace Skyship
             var items = GameObject.FindObjectsByType<CargoItem>(FindObjectsInactive.Exclude);
             foreach (var item in items)
                 localCargoItems[item.name] = item;
+
+            localNodes.Clear();
+            var nodes = GameObject.FindObjectsByType<ResourceNode>(FindObjectsInactive.Exclude);
+            foreach (var node in nodes)
+                localNodes[node.nodeId] = node;
+        }
+
+        // ==========================================
+        // RESOURCE-NODE HARVESTING
+        // ==========================================
+
+        /// <summary>
+        /// Called by PlayerInteraction when the local player presses E on a resource node.
+        /// The authority (host/solo) harvests immediately; a connected client asks the host,
+        /// and the crate appears when the HarvestResult comes back.
+        /// </summary>
+        public void RequestHarvest(ResourceNode node, Vector3 playerPos, Vector3 playerForward)
+        {
+            if (node == null || node.IsDepleted) return;
+
+            if (LocalAuthority)
+            {
+                HandleHarvest(node, playerPos, playerForward);
+            }
+            else if (hostEndPoint != null)
+            {
+                SendPacketDirect(new NetworkPacket
+                {
+                    senderId = localPlayerId,
+                    packetType = "HarvestRequest",
+                    harvestNodeId = node.nodeId,
+                    harvestPlayerPos = playerPos,
+                    harvestPlayerForward = playerForward
+                }, hostEndPoint);
+            }
+        }
+
+        /// <summary>
+        /// Authority path: consume one yield, spawn the crate at a clear spot in front of the
+        /// harvester, and (when hosting) broadcast the result so every client spawns the identical
+        /// crate. A lost result packet self-heals via the State sync (node yields + cargo list).
+        /// </summary>
+        private void HandleHarvest(ResourceNode node, Vector3 playerPos, Vector3 playerForward)
+        {
+            if (node == null || node.IsDepleted) return;
+
+            string crateName = node.NextCargoName; // derive BEFORE consuming so the index matches
+            Vector3 dropPos = ResourceNode.FindDropPoint(playerPos, playerForward, node.transform.position);
+            if (!node.TryConsumeOne()) return;
+
+            SpawnHarvestCrate(crateName, node.CargoCategory, dropPos);
+
+            if (isHost && isConnected)
+            {
+                BroadcastPacket(new NetworkPacket
+                {
+                    senderId = localPlayerId,
+                    packetType = "HarvestResult",
+                    harvestNodeId = node.nodeId,
+                    harvestRemaining = node.remainingYield,
+                    harvestCargoName = crateName,
+                    harvestCargoCategory = (int)node.CargoCategory,
+                    harvestSpawnPos = dropPos
+                });
+            }
+        }
+
+        /// <summary>
+        /// Spawn a harvest crate (idempotent by name) and register it for cargo sync. Runs on every
+        /// peer: the authority from HandleHarvest, clients from HarvestResult packets or the
+        /// unknown-cargo self-heal in the State sync.
+        /// </summary>
+        private CargoItem SpawnHarvestCrate(string crateName, CargoCategory category, Vector3 pos)
+        {
+            if (localCargoItems.TryGetValue(crateName, out CargoItem existing) && existing != null)
+                return existing;
+
+            if (worldGenerator == null)
+                worldGenerator = UnityEngine.Object.FindAnyObjectByType<WorldGenerator>();
+            if (worldGenerator == null) return null; // not in a generated world (e.g. still in the hub)
+
+            CargoItem item = worldGenerator.SpawnCargoNamed(crateName, category, pos);
+            localCargoItems[item.name] = item;
+            return item;
         }
 
         /// <summary>
@@ -688,9 +790,23 @@ namespace Skyship
                         {
                             name = item.name,
                             position = item.transform.position,
-                            rotation = item.transform.rotation
+                            rotation = item.transform.rotation,
+                            category = (int)item.category
                         });
                     }
+                }
+
+                // Node yields ride along every tick (tiny), so a client that missed a
+                // HarvestResult converges on the next State packet.
+                foreach (var kvp in localNodes)
+                {
+                    ResourceNode node = kvp.Value;
+                    if (node == null) continue;
+                    statePacket.nodes.Add(new NodeNetworkData
+                    {
+                        name = node.nodeId,
+                        remaining = node.remainingYield
+                    });
                 }
 
                 BroadcastPacket(statePacket);
@@ -855,6 +971,29 @@ namespace Skyship
                 return;
             }
 
+            // Harvest requests are host-authoritative (clients ask, host validates + broadcasts).
+            if (packet.packetType == "HarvestRequest")
+            {
+                if (isHost && localNodes.TryGetValue(packet.harvestNodeId ?? "", out ResourceNode reqNode))
+                    HandleHarvest(reqNode, packet.harvestPlayerPos, packet.harvestPlayerForward);
+                return;
+            }
+
+            // A harvest happened on the host: mirror the node's yield and spawn the same crate.
+            if (packet.packetType == "HarvestResult")
+            {
+                if (!isHost)
+                {
+                    if (localNodes.TryGetValue(packet.harvestNodeId ?? "", out ResourceNode resNode))
+                        resNode.ApplyRemoteYield(packet.harvestRemaining);
+                    if (!string.IsNullOrEmpty(packet.harvestCargoName))
+                        SpawnHarvestCrate(packet.harvestCargoName,
+                                          (CargoCategory)packet.harvestCargoCategory,
+                                          packet.harvestSpawnPos);
+                }
+                return;
+            }
+
             // Helm claim/release requests are host-authoritative (clients ask, host decides).
             if (packet.packetType == "ClaimHelm")
             {
@@ -1007,6 +1146,19 @@ namespace Skyship
                             item.transform.rotation = Quaternion.Slerp(item.transform.rotation, cData.rotation, 0.4f);
                         }
                     }
+                    else
+                    {
+                        // Unknown crate: we missed its HarvestResult packet. Spawn it from the
+                        // State data so the world converges (idempotent by name).
+                        SpawnHarvestCrate(cData.name, (CargoCategory)cData.category, cData.position);
+                    }
+                }
+
+                // Client-only: reconcile node yields with the host (covers lost HarvestResults).
+                foreach (var nData in packet.nodes)
+                {
+                    if (localNodes.TryGetValue(nData.name, out ResourceNode node) && node != null)
+                        node.ApplyRemoteYield(nData.remaining);
                 }
             }
         }

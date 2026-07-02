@@ -4,12 +4,34 @@ using UnityEngine;
 
 namespace Skyship
 {
+    /// <summary>Which kind of structure a map-registry entry describes (consumed by the ship's map table).</summary>
+    public enum MapStructureKind
+    {
+        IslandVeryLarge,
+        IslandLarge,
+        IslandMedium,
+        IslandSmall,
+        Derelict
+    }
+
+    /// <summary>One placed structure, recorded for the ship's map-table diorama.</summary>
+    [Serializable]
+    public struct MapStructureInfo
+    {
+        public string name;
+        public Vector3 position;
+        public float radius;
+        public MapStructureKind kind;
+    }
+
     /// <summary>
-    /// Procedurally fills the airspace with MASSIVE floating islands (frequent, carrying raw resources +
-    /// occasional fuel/treasure) and MASSIVE derelict ships (sparse, carrying repair/special cargo, fuel,
-    /// and treasure). Islands get procedurally-laid-out natural terrain (plateaus, spires, boulders,
-    /// arches); derelicts get procedurally-laid-out interiors (a grid of rooms joined by doorways into
-    /// corridors, with debris obstacles). Graybox primitives, matching the prototype art.
+    /// Procedurally fills the airspace with floating islands in four size tiers (1 very large,
+    /// 2-3 large, 6-7 medium, 9-12 small per map) and 2-4 derelict ships, spaced kilometres apart.
+    /// Island bodies are vertex-displaced meshes (IslandMeshBuilder): gently bumpy walkable tops,
+    /// craggy undersides tapering to a point, decorated with hanging crystals, roots, and rock
+    /// chunks. Tops carry steep non-climbable rocks; raw resources come from harvestable nodes
+    /// (see ResourceNode), with only occasional loose fuel/treasure crates. Derelicts keep their
+    /// procedurally-laid-out interiors (grid of rooms joined by doorways, debris obstacles).
     ///
     /// NETWORKING: generation is fully deterministic from a single integer seed. The host picks a
     /// world seed and broadcasts it in the StartGame packet (see NetworkManagerP2P); every peer then
@@ -27,28 +49,44 @@ namespace Skyship
                  "Set non-zero to force a fixed layout for testing.")]
         public int seedOverride = 0;
 
-        [Header("Spawn Volume (centered on this GameObject)")]
-        [Tooltip("Islands/derelicts are scattered inside this box. With vertical ship movement the Y range " +
-                 "is now meaningful — structures spread across altitudes you climb/descend to reach.")]
-        public Vector3 volumeSize = new Vector3(1600f, 200f, 1600f);
-        [Tooltip("Minimum distance between island/derelict centers. Large, because the structures are huge.")]
-        public float minSpacing = 320f;
+        [Header("World Volume (centered on this GameObject)")]
+        [Tooltip("Structures are scattered inside this box. Sea-of-Thieves-ish scale: kilometres across, " +
+                 "with the Y range spreading islands over the altitudes you climb/descend to reach.")]
+        public Vector3 worldExtent = new Vector3(8000f, 700f, 8000f);
+        [Tooltip("Minimum EDGE-to-edge gap between structures (spacing check is radiusA + radiusB + this).")]
+        public float baseIslandGap = 600f;
         [Tooltip("Keep this horizontal radius around the world origin (the ship spawn) empty.")]
-        public float keepClearRadius = 170f;
+        public float spawnClearRadius = 400f;
         [Tooltip("How many placement attempts per structure before giving up on that one.")]
         public int placementAttempts = 60;
 
-        [Header("Islands (frequent, massive)")]
-        public int islandCount = 14;
-        [Tooltip("Half-extent of an island's top plateau. These are huge floating landmasses.")]
-        public Vector2 islandRadius = new Vector2(34f, 72f);
-        [Tooltip("Min/max raw-resource crates per island.")]
-        public Vector2Int cargoPerIsland = new Vector2Int(3, 7);
-        [Range(0f, 1f)] public float islandFuelChance = 0.22f;
-        [Range(0f, 1f)] public float islandTreasureChance = 0.10f;
+        [Header("Island Tiers (per map)")]
+        public Vector2Int veryLargeCount = new Vector2Int(1, 1);
+        public Vector2 veryLargeRadius = new Vector2(220f, 280f);
+        public Vector2Int largeCount = new Vector2Int(2, 3);
+        public Vector2 largeRadius = new Vector2(140f, 180f);
+        public Vector2Int mediumCount = new Vector2Int(6, 7);
+        public Vector2 mediumRadius = new Vector2(70f, 110f);
+        public Vector2Int smallCount = new Vector2Int(9, 12);
+        public Vector2 smallRadius = new Vector2(30f, 55f);
 
-        [Header("Derelicts (sparse, massive, room-filled)")]
-        public int derelictCount = 4;
+        [Header("Island Loose Loot (fuel/treasure only — raw resources come from nodes)")]
+        [Tooltip("Min/max loose crates per island. Raw resources are NOT in this pool.")]
+        public Vector2Int looseLootPerIsland = new Vector2Int(0, 2);
+        [Range(0f, 1f)]
+        [Tooltip("Chance a loose crate is Treasure; otherwise it's Fuel.")]
+        public float looseTreasureChance = 0.35f;
+
+        [Header("Resource Nodes (harvestable rocks, per island by tier)")]
+        public Vector2Int nodesSmallIsland = new Vector2Int(1, 2);
+        public Vector2Int nodesMediumIsland = new Vector2Int(2, 4);
+        public Vector2Int nodesLargeIsland = new Vector2Int(4, 6);
+        public Vector2Int nodesVeryLargeIsland = new Vector2Int(6, 9);
+        [Tooltip("Min/max total crates a single node yields before it's spent.")]
+        public Vector2Int nodeYieldRange = new Vector2Int(3, 8);
+
+        [Header("Derelicts (sparse, room-filled)")]
+        public Vector2Int derelictCountRange = new Vector2Int(2, 4);
         [Tooltip("Min/max hull length (along Z) of a derelict ship.")]
         public Vector2 derelictLength = new Vector2(48f, 78f);
         [Tooltip("Min/max hull width (along X) of a derelict ship.")]
@@ -58,19 +96,35 @@ namespace Skyship
         [Tooltip("Min/max crates per derelict (repair/special/fuel/treasure), scattered through the rooms.")]
         public Vector2Int cargoPerDerelict = new Vector2Int(5, 11);
 
+        [Header("Ambience (applied at runtime on every peer)")]
+        [Tooltip("Camera far clip needed to see distant islands across the world volume.")]
+        public float cameraFarClip = 6500f;
+        public float fogStartDistance = 2500f;
+        public float fogEndDistance = 6000f;
+        public Color fogColor = new Color(0.65f, 0.72f, 0.82f);
+
         [Header("Runtime (read-only)")]
         [SerializeField] private int usedSeed;
         [SerializeField] private int spawnedIslands;
         [SerializeField] private int spawnedDerelicts;
+        [SerializeField] private int spawnedNodes;
         [SerializeField] private int spawnedCargo;
         [SerializeField] private int spawnedPrimitives;
 
         private System.Random rng;
         private int cargoCounter;
+        private int nodeCounter;
         private int terrainLayer = -1; // structures go on this layer so the ship's hull collides with them
-        private readonly List<Vector3> placed = new List<Vector3>();
+
+        private struct PlacedEntry { public Vector3 pos; public float radius; }
+        private readonly List<PlacedEntry> placed = new List<PlacedEntry>();
+
+        private readonly List<MapStructureInfo> structures = new List<MapStructureInfo>();
+        /// <summary>Every placed structure (position/radius/kind), for the ship's map table.</summary>
+        public IReadOnlyList<MapStructureInfo> Structures => structures;
 
         private Material rockMat, rockDarkMat, hullMat, wallMat, debrisMat;
+        private Material islandTopMat, islandUnderMat, crystalMat, rootMat, stoneMat, oreMat;
         private readonly Dictionary<CargoCategory, Material> cargoMats = new Dictionary<CargoCategory, Material>();
 
         private void Start()
@@ -88,135 +142,302 @@ namespace Skyship
 
             rng = new System.Random(usedSeed);
             cargoCounter = 0;
-            spawnedIslands = spawnedDerelicts = spawnedCargo = spawnedPrimitives = 0;
+            nodeCounter = 0;
+            spawnedIslands = spawnedDerelicts = spawnedNodes = spawnedCargo = spawnedPrimitives = 0;
             placed.Clear();
+            structures.Clear();
             BuildMaterials();
             // Islands/derelicts go on the "Terrain" layer so the ship's hull collides with them
             // (loose cargo stays on the default layer, so it doesn't block the ship).
             terrainLayer = LayerMask.NameToLayer("Terrain");
 
-            // Fixed order: all islands, then all derelicts (identical on every peer).
-            for (int i = 0; i < islandCount; i++) SpawnIsland(i);
-            for (int i = 0; i < derelictCount; i++) SpawnDerelict(i);
+            // Fixed order (identical on every peer): biggest islands first for packing, then derelicts.
+            SpawnIslandTier(MapStructureKind.IslandVeryLarge, veryLargeCount, veryLargeRadius);
+            SpawnIslandTier(MapStructureKind.IslandLarge, largeCount, largeRadius);
+            SpawnIslandTier(MapStructureKind.IslandMedium, mediumCount, mediumRadius);
+            SpawnIslandTier(MapStructureKind.IslandSmall, smallCount, smallRadius);
+
+            int derelicts = RandInt(derelictCountRange.x, derelictCountRange.y);
+            for (int i = 0; i < derelicts; i++) SpawnDerelict(i);
+
+            ApplyAmbience();
+
+            // Build the lower-cabin map diorama from everything we just placed.
+            ShipMapTable.CreateOnShip(structures, worldExtent, transform.position);
 
             // Cargo was created after the network manager cached this scene's objects; refresh so the
             // host syncs every crate (and clients can resolve them by name).
             if (nm != null) nm.RefreshCargoRegistry();
 
             Debug.Log($"[WorldGenerator] seed={usedSeed}: {spawnedIslands} islands, {spawnedDerelicts} derelicts, " +
-                      $"{spawnedCargo} cargo, {spawnedPrimitives} primitives.");
+                      $"{spawnedNodes} nodes, {spawnedCargo} cargo, {spawnedPrimitives} primitives.");
+        }
+
+        /// <summary>Distant islands need a long draw distance; linear fog sells the scale and hides the clip.</summary>
+        private void ApplyAmbience()
+        {
+            var cam = Camera.main;
+            if (cam != null) cam.farClipPlane = cameraFarClip;
+
+            RenderSettings.fog = true;
+            RenderSettings.fogMode = FogMode.Linear;
+            RenderSettings.fogStartDistance = fogStartDistance;
+            RenderSettings.fogEndDistance = fogEndDistance;
+            RenderSettings.fogColor = fogColor;
         }
 
         // ========================================================================================
-        // ISLANDS — massive floating landmasses with procedural natural terrain
+        // ISLANDS — mesh landmasses with bumpy walkable tops and craggy, decorated undersides
         // ========================================================================================
-        private void SpawnIsland(int index)
+        private void SpawnIslandTier(MapStructureKind kind, Vector2Int countRange, Vector2 radiusRange)
         {
-            if (!TryPickPoint(out Vector3 center)) return;
+            int count = RandInt(countRange.x, countRange.y);
+            for (int i = 0; i < count; i++)
+                SpawnIsland(kind, radiusRange);
+        }
 
-            float radius = RandRange(islandRadius.x, islandRadius.y);
-            var island = new GameObject($"Island_{index:00}");
+        private void SpawnIsland(MapStructureKind kind, Vector2 radiusRange)
+        {
+            float radius = RandRange(radiusRange.x, radiusRange.y);
+            if (!TryPickPoint(radius, out Vector3 center)) return;
+
+            var island = new GameObject($"Island_{spawnedIslands:00}");
             island.transform.position = center;
-            island.transform.rotation = Quaternion.Euler(0f, RandRange(0f, 360f), 0f);
             island.transform.SetParent(transform, true);
 
-            BuildIslandBody(island.transform, radius);
-            BuildIslandObstacles(island.transform, radius);
+            IslandMeshBuilder.Surface surface;
+            float underDepth = BuildIslandBody(island.transform, radius, out surface);
+            BuildIslandRocks(island.transform, radius, surface);
+            BuildIslandUnderside(island.transform, radius, underDepth, surface);
             SetLayerRecursive(island, terrainLayer); // solid terrain (cargo, added next, stays default)
-            ScatterIslandCargo(island.transform, radius);
+            ScatterResourceNodes(island.transform, radius, surface, kind);
+            ScatterLooseLoot(island.transform, radius, surface);
 
+            structures.Add(new MapStructureInfo
+            {
+                name = island.name,
+                position = center,
+                radius = radius,
+                kind = kind
+            });
             spawnedIslands++;
         }
 
-        /// <summary>The landmass itself: a broad flattened top plateau plus a tapering, craggy underside.</summary>
-        private void BuildIslandBody(Transform island, float radius)
+        /// <summary>The landmass mesh: bumpy walkable top (surface ~localY 0) + tapering underside.</summary>
+        private float BuildIslandBody(Transform island, float radius, out IslandMeshBuilder.Surface surface)
         {
-            // Top plateau: several large overlapping flattened chunks. The surface sits at localY ~ 0
-            // so things on top (cargo, the player) stand at the island's picked altitude.
-            int chunks = RandInt(4, 7);
-            for (int c = 0; c < chunks; c++)
+            float sizeT = Mathf.InverseLerp(smallRadius.x, veryLargeRadius.y, radius);
+            var p = new IslandMeshBuilder.Params
             {
-                float spread = radius * 0.55f;
-                Box(island,
-                    new Vector3(RandRange(-spread, spread), RandRange(-radius * 0.18f, 0f), RandRange(-spread, spread)),
-                    new Vector3(radius * RandRange(0.8f, 1.4f), radius * RandRange(0.25f, 0.5f), radius * RandRange(0.8f, 1.4f)),
-                    new Vector3(0f, RandRange(0f, 360f), 0f),
-                    rockMat, "Plateau");
-            }
+                radius = radius,
+                topRings = Mathf.Clamp(8 + Mathf.RoundToInt(radius * 0.06f), 10, 24),
+                segments = Mathf.Clamp(16 + Mathf.RoundToInt(radius * 0.12f), 20, 48),
+                underRings = 8,
+                heightAmp = Mathf.Lerp(1.5f, 4f, sizeT),
+                rimDip = Mathf.Lerp(0.8f, 2.5f, sizeT),
+                underDepth = radius * RandRange(0.9f, 1.3f),
+                outlineWobble = 0.22f,
+                underJag = 0.18f
+            };
 
-            // Underside: progressively smaller, inward chunks tapering to a point — the floating-rock look.
-            int tiers = RandInt(3, 5);
-            for (int t = 0; t < tiers; t++)
-            {
-                float f = 1f - (t + 1) / (float)(tiers + 1);          // shrinks toward the tip
-                float y = -radius * (0.25f + t * 0.45f);
-                Box(island,
-                    new Vector3(RandRange(-radius * 0.12f, radius * 0.12f), y, RandRange(-radius * 0.12f, radius * 0.12f)),
-                    new Vector3(radius * f * RandRange(0.7f, 1.1f), radius * RandRange(0.4f, 0.7f), radius * f * RandRange(0.7f, 1.1f)),
-                    new Vector3(RandRange(-12f, 12f), RandRange(0f, 360f), RandRange(-12f, 12f)),
-                    rockDarkMat, "Underside");
-            }
+            Mesh mesh = IslandMeshBuilder.Build(rng, p, out surface);
+
+            var body = new GameObject("IslandBody");
+            body.transform.SetParent(island, false);
+            body.AddComponent<MeshFilter>().sharedMesh = mesh;
+            var mr = body.AddComponent<MeshRenderer>();
+            mr.sharedMaterials = new[] { islandTopMat, islandUnderMat }; // submesh 0 = top, 1 = underside
+            body.AddComponent<MeshCollider>().sharedMesh = mesh;         // static, non-convex
+            spawnedPrimitives++;
+
+            return p.underDepth;
         }
 
-        /// <summary>Natural obstacles on the surface: rock spires, scattered boulders, and the odd arch.</summary>
-        private void BuildIslandObstacles(Transform island, float radius)
+        /// <summary>
+        /// Steep, non-climbable rocks on the top surface: near-vertical spires and tall upright
+        /// boulders. Kept upright (yaw-only for boulders) so no face forms a walkable ramp —
+        /// the CharacterController's 45° slope limit rejects them.
+        /// </summary>
+        private void BuildIslandRocks(Transform island, float radius, IslandMeshBuilder.Surface surface)
         {
-            // Spires — tall rock pillars you have to navigate around.
-            int spires = RandInt(4, 9);
+            int spires = RandInt(3, 6) + Mathf.RoundToInt(radius / 60f);
             for (int s = 0; s < spires; s++)
             {
                 Vector2 p = RandInsideDisc(radius * 0.8f);
-                float h = RandRange(radius * 0.3f, radius * 0.9f);
-                float r = RandRange(radius * 0.04f, radius * 0.1f);
-                Cyl(island, new Vector3(p.x, h * 0.5f, p.y), h, r,
-                    new Vector3(RandRange(-6f, 6f), RandRange(0f, 360f), RandRange(-6f, 6f)),
+                float groundY = surface.HeightAt(p.x, p.y);
+                float h = RandRange(6f, 10f + radius * 0.06f);
+                float r = RandRange(1.2f, 2.5f + radius * 0.01f);
+                Cyl(island, new Vector3(p.x, groundY + h * 0.5f - 0.5f, p.y), h, r,
+                    new Vector3(RandRange(-5f, 5f), RandRange(0f, 360f), RandRange(-5f, 5f)),
                     rockMat, "Spire");
             }
 
-            // Boulders — chunky obstacles scattered across the deck.
-            int boulders = RandInt(6, 14);
+            int boulders = RandInt(4, 8) + Mathf.RoundToInt(radius / 50f);
             for (int b = 0; b < boulders; b++)
             {
-                Vector2 p = RandInsideDisc(radius * 0.9f);
-                float size = RandRange(radius * 0.08f, radius * 0.22f);
-                Box(island, new Vector3(p.x, size * 0.4f, p.y),
-                    new Vector3(size * RandRange(0.8f, 1.3f), size * RandRange(0.6f, 1.1f), size * RandRange(0.8f, 1.3f)),
-                    new Vector3(RandRange(0f, 360f), RandRange(0f, 360f), RandRange(0f, 360f)),
+                Vector2 p = RandInsideDisc(radius * 0.85f);
+                float groundY = surface.HeightAt(p.x, p.y);
+                float w = RandRange(2f, 4f + radius * 0.02f);
+                float h = RandRange(3f, 6f);
+                Box(island, new Vector3(p.x, groundY + h * 0.5f - 0.4f, p.y),
+                    new Vector3(w * RandRange(0.8f, 1.3f), h, w * RandRange(0.8f, 1.3f)),
+                    new Vector3(0f, RandRange(0f, 360f), 0f), // yaw only: sides stay vertical
                     rockDarkMat, "Boulder");
-            }
-
-            // Arches — two pillars spanned by a lintel; a natural gateway.
-            int arches = RandInt(0, 3);
-            for (int a = 0; a < arches; a++)
-            {
-                Vector2 p = RandInsideDisc(radius * 0.6f);
-                float span = RandRange(radius * 0.25f, radius * 0.45f);
-                float h = RandRange(radius * 0.35f, radius * 0.6f);
-                float yaw = RandRange(0f, 360f);
-                var arch = new GameObject("Arch");
-                arch.transform.SetParent(island, false);
-                arch.transform.localPosition = new Vector3(p.x, 0f, p.y);
-                arch.transform.localRotation = Quaternion.Euler(0f, yaw, 0f);
-                float legR = radius * 0.05f;
-                Cyl(arch.transform, new Vector3(-span * 0.5f, h * 0.5f, 0f), h, legR, Vector3.zero, rockMat, "Leg");
-                Cyl(arch.transform, new Vector3(span * 0.5f, h * 0.5f, 0f), h, legR, Vector3.zero, rockMat, "Leg");
-                Box(arch.transform, new Vector3(0f, h, 0f),
-                    new Vector3(span + legR * 2f, legR * 2f, legR * 2f), Vector3.zero, rockMat, "Span");
             }
         }
 
-        private void ScatterIslandCargo(Transform island, float radius)
+        /// <summary>Hanging decoration under the island: crystals, root strands, embedded rock chunks.</summary>
+        private void BuildIslandUnderside(Transform island, float radius, float underDepth,
+                                          IslandMeshBuilder.Surface surface)
         {
-            int count = RandInt(cargoPerIsland.x, cargoPerIsland.y);
+            // Approximates the underside cone's radius at a depth fraction (mirrors the mesh's shrink curve).
+            float ConeRadiusAt(float angle, float u) => surface.OutlineRadius(angle) * Mathf.Pow(1f - u, 1.35f);
+            float ConeYAt(float u) => -underDepth * Mathf.Pow(u, 1.15f);
+
+            // Hanging crystals — bright shards poking out of the cone, pointing down and outward.
+            int crystals = RandInt(3, 5) + Mathf.RoundToInt(radius / 70f);
+            for (int c = 0; c < crystals; c++)
+            {
+                float ang = RandRange(0f, Mathf.PI * 2f);
+                float u = RandRange(0.15f, 0.55f);
+                float rc = ConeRadiusAt(ang, u) * 0.85f;
+                var pos = new Vector3(Mathf.Cos(ang) * rc, ConeYAt(u), Mathf.Sin(ang) * rc);
+
+                float len = Mathf.Clamp(radius * RandRange(0.12f, 0.28f), 4f, 30f);
+                Mesh crystal = IslandMeshBuilder.BuildCrystal(rng, len, len * RandRange(0.16f, 0.24f));
+
+                var go = new GameObject("Crystal");
+                go.transform.SetParent(island, false);
+                go.transform.localPosition = pos;
+                // +Y-built shard flipped to hang: point down with an outward/random lean.
+                go.transform.localRotation = Quaternion.Euler(
+                    180f + RandRange(-22f, 22f), RandRange(0f, 360f), RandRange(-22f, 22f));
+                go.AddComponent<MeshFilter>().sharedMesh = crystal;
+                go.AddComponent<MeshRenderer>().sharedMaterial = crystalMat;
+                var mc = go.AddComponent<MeshCollider>();
+                mc.sharedMesh = crystal;
+                mc.convex = true; // 14 verts — cheap
+                spawnedPrimitives++;
+            }
+
+            // Root strands — chains of shrinking cylinders drooping from near the rim.
+            int roots = RandInt(2, 4) + Mathf.RoundToInt(radius / 90f);
+            for (int r = 0; r < roots; r++)
+            {
+                float ang = RandRange(0f, Mathf.PI * 2f);
+                float rr = surface.OutlineRadius(ang) * RandRange(0.55f, 0.85f);
+                Vector3 tip = new Vector3(Mathf.Cos(ang) * rr, -radius * 0.04f, Mathf.Sin(ang) * rr);
+                Vector3 dir = Vector3.down;
+                int segs = RandInt(3, 5);
+                float segLen = radius * RandRange(0.07f, 0.12f);
+                float thick = Mathf.Clamp(radius * 0.015f, 0.4f, 3f);
+                for (int i = 0; i < segs; i++)
+                {
+                    float t = i / (float)segs;
+                    Vector3 mid = tip + dir * (segLen * 0.5f);
+                    var seg = Cyl(island, mid, segLen, thick * (1f - t * 0.7f), Vector3.zero, rootMat, "Root");
+                    seg.transform.localRotation = Quaternion.FromToRotation(Vector3.up, -dir);
+                    tip += dir * segLen;
+                    dir = (dir + new Vector3(RandRange(-0.3f, 0.3f), 0f, RandRange(-0.3f, 0.3f))).normalized;
+                }
+            }
+
+            // Embedded rock chunks — dark boxes jutting from the cone surface.
+            int chunks = RandInt(2, 5) + Mathf.RoundToInt(radius / 80f);
+            for (int k = 0; k < chunks; k++)
+            {
+                float ang = RandRange(0f, Mathf.PI * 2f);
+                float u = RandRange(0.1f, 0.5f);
+                float rc = ConeRadiusAt(ang, u) * 0.95f;
+                float size = radius * RandRange(0.08f, 0.16f);
+                Box(island, new Vector3(Mathf.Cos(ang) * rc, ConeYAt(u), Mathf.Sin(ang) * rc),
+                    new Vector3(size, size * RandRange(0.6f, 1f), size),
+                    new Vector3(RandRange(0f, 360f), RandRange(0f, 360f), RandRange(0f, 360f)),
+                    rockDarkMat, "Chunk");
+            }
+        }
+
+        /// <summary>
+        /// Harvestable resource nodes: each island rolls a dominant resource flavor, then scatters
+        /// tier-scaled node counts across its top. All rolls come from the shared rng, so node
+        /// placement, type, and total yield are identical on every peer.
+        /// </summary>
+        private void ScatterResourceNodes(Transform island, float radius,
+                                          IslandMeshBuilder.Surface surface, MapStructureKind kind)
+        {
+            Vector2Int range;
+            switch (kind)
+            {
+                case MapStructureKind.IslandVeryLarge: range = nodesVeryLargeIsland; break;
+                case MapStructureKind.IslandLarge: range = nodesLargeIsland; break;
+                case MapStructureKind.IslandMedium: range = nodesMediumIsland; break;
+                default: range = nodesSmallIsland; break;
+            }
+
+            int count = RandInt(range.x, range.y);
+            var dominant = (ResourceNodeType)rng.Next(0, 3); // the island's resource theme
+            for (int n = 0; n < count; n++)
+            {
+                var type = rng.NextDouble() < 0.6 ? dominant : (ResourceNodeType)rng.Next(0, 3);
+                Vector2 p = RandInsideDisc(radius * 0.75f);
+                float y = surface.HeightAt(p.x, p.y);
+                BuildResourceNode(island, new Vector3(p.x, y, p.y), type);
+            }
+        }
+
+        /// <summary>A node's body: a low cluster of dark rocks with type-colored crystal veins on top.</summary>
+        private void BuildResourceNode(Transform island, Vector3 localPos, ResourceNodeType type)
+        {
+            nodeCounter++;
+            var go = new GameObject($"WNode_{nodeCounter:0000}"); // deterministic -> harvest sync keys on this
+            go.transform.SetParent(island, false);
+            go.transform.localPosition = localPos;
+            go.transform.localRotation = Quaternion.Euler(0f, RandRange(0f, 360f), 0f);
+
+            int rocks = RandInt(3, 5);
+            for (int r = 0; r < rocks; r++)
+            {
+                float s = RandRange(0.7f, 1.4f);
+                Box(go.transform,
+                    new Vector3(RandRange(-0.7f, 0.7f), s * 0.3f, RandRange(-0.7f, 0.7f)),
+                    new Vector3(s, s * RandRange(0.6f, 0.9f), s),
+                    new Vector3(RandRange(0f, 360f), RandRange(0f, 360f), RandRange(0f, 360f)),
+                    r % 2 == 0 ? rockDarkMat : rockMat, "NodeRock");
+            }
+
+            Material veinMat = type == ResourceNodeType.Stone ? stoneMat
+                             : type == ResourceNodeType.Ore ? oreMat : crystalMat;
+            var veins = new List<Transform>();
+            int veinCount = RandInt(2, 4);
+            for (int v = 0; v < veinCount; v++)
+            {
+                Mesh shard = IslandMeshBuilder.BuildCrystal(rng, RandRange(0.6f, 1.1f), RandRange(0.14f, 0.22f));
+                var vein = new GameObject("Vein");
+                vein.transform.SetParent(go.transform, false);
+                vein.transform.localPosition = new Vector3(RandRange(-0.6f, 0.6f), RandRange(0.5f, 0.9f), RandRange(-0.6f, 0.6f));
+                vein.transform.localRotation = Quaternion.Euler(RandRange(-35f, 35f), RandRange(0f, 360f), RandRange(-35f, 35f));
+                vein.AddComponent<MeshFilter>().sharedMesh = shard;
+                vein.AddComponent<MeshRenderer>().sharedMaterial = veinMat; // visual only, no collider
+                veins.Add(vein.transform);
+                spawnedPrimitives++;
+            }
+
+            var node = go.AddComponent<ResourceNode>();
+            node.Initialize(go.name, type, RandInt(nodeYieldRange.x, nodeYieldRange.y), veins);
+            SetLayerRecursive(go, terrainLayer);
+            spawnedNodes++;
+        }
+
+        private void ScatterLooseLoot(Transform island, float radius, IslandMeshBuilder.Surface surface)
+        {
+            int count = RandInt(looseLootPerIsland.x, looseLootPerIsland.y);
             for (int k = 0; k < count; k++)
             {
-                CargoCategory cat = CargoCategory.RawResource;
-                double roll = rng.NextDouble();
-                if (roll < islandTreasureChance) cat = CargoCategory.Treasure;
-                else if (roll < islandTreasureChance + islandFuelChance) cat = CargoCategory.Fuel;
-
-                Vector2 p = RandInsideDisc(radius * 0.75f);
-                SpawnCargo(island.TransformPoint(new Vector3(p.x, 1.5f, p.y)), cat);
+                CargoCategory cat = rng.NextDouble() < looseTreasureChance
+                    ? CargoCategory.Treasure : CargoCategory.Fuel;
+                Vector2 p = RandInsideDisc(radius * 0.7f);
+                float y = surface.HeightAt(p.x, p.y) + 1.5f;
+                SpawnCargo(island.TransformPoint(new Vector3(p.x, y, p.y)), cat);
             }
         }
 
@@ -225,10 +446,10 @@ namespace Skyship
         // ========================================================================================
         private void SpawnDerelict(int index)
         {
-            if (!TryPickPoint(out Vector3 center)) return;
-
             float length = RandRange(derelictLength.x, derelictLength.y);
             float width = RandRange(derelictWidth.x, derelictWidth.y);
+            if (!TryPickPoint(length * 0.5f, out Vector3 center)) return;
+
             float h = derelictDeckHeight;
 
             var derelict = new GameObject($"Derelict_{index:00}");
@@ -243,6 +464,13 @@ namespace Skyship
             SetLayerRecursive(derelict, terrainLayer); // solid terrain (cargo, added next, stays default)
             ScatterDerelictCargo(derelict.transform, length, width);
 
+            structures.Add(new MapStructureInfo
+            {
+                name = derelict.name,
+                position = center,
+                radius = length * 0.5f,
+                kind = MapStructureKind.Derelict
+            });
             spawnedDerelicts++;
         }
 
@@ -434,8 +662,19 @@ namespace Skyship
         private void SpawnCargo(Vector3 worldPos, CargoCategory cat)
         {
             cargoCounter++;
+            SpawnCargoNamed($"WCargo_{cargoCounter:0000}", cat, worldPos); // deterministic, unique name
+        }
+
+        /// <summary>
+        /// Spawn a crate with an explicit (deterministic) name — used both during generation and at
+        /// runtime by the resource-harvest flow, where every peer spawns the same crate from a packet.
+        /// </summary>
+        public CargoItem SpawnCargoNamed(string cargoName, CargoCategory cat, Vector3 worldPos)
+        {
+            if (cargoMats.Count == 0) BuildMaterials();
+
             var go = GameObject.CreatePrimitive(PrimitiveType.Cube);
-            go.name = $"WCargo_{cargoCounter:0000}"; // deterministic, unique -> network cargo sync keys on this
+            go.name = cargoName; // network cargo sync keys on this
             go.transform.position = worldPos;
             go.transform.localScale = Vector3.one * 0.8f;
             go.GetComponent<Renderer>().sharedMaterial = CargoMaterial(cat);
@@ -456,6 +695,7 @@ namespace Skyship
                 rb.useGravity = false;
             }
             spawnedCargo++;
+            return item;
         }
 
         // ========================================================================================
@@ -531,23 +771,35 @@ namespace Skyship
             foreach (Transform child in go.transform) SetLayerRecursive(child.gameObject, layer);
         }
 
-        private bool TryPickPoint(out Vector3 point)
+        /// <summary>
+        /// Pick a spot for a structure of the given radius: inside the world volume, outside the
+        /// spawn clearing, and edge-to-edge clear of everything already placed (radiusA + radiusB
+        /// + baseIslandGap). Radius-aware so huge islands claim proportionally more room.
+        /// </summary>
+        private bool TryPickPoint(float structRadius, out Vector3 point)
         {
             for (int attempt = 0; attempt < placementAttempts; attempt++)
             {
                 point = transform.position + new Vector3(
-                    RandRange(-volumeSize.x * 0.5f, volumeSize.x * 0.5f),
-                    RandRange(-volumeSize.y * 0.5f, volumeSize.y * 0.5f),
-                    RandRange(-volumeSize.z * 0.5f, volumeSize.z * 0.5f));
+                    RandRange(-worldExtent.x * 0.5f, worldExtent.x * 0.5f),
+                    RandRange(-worldExtent.y * 0.5f, worldExtent.y * 0.5f),
+                    RandRange(-worldExtent.z * 0.5f, worldExtent.z * 0.5f));
 
                 // Keep the ship's spawn clearing empty (horizontal distance from world origin).
-                if (new Vector2(point.x, point.z).magnitude < keepClearRadius) continue;
+                if (new Vector2(point.x, point.z).magnitude < spawnClearRadius + structRadius) continue;
 
                 bool ok = true;
                 for (int i = 0; i < placed.Count; i++)
-                    if ((placed[i] - point).sqrMagnitude < minSpacing * minSpacing) { ok = false; break; }
+                {
+                    float needed = placed[i].radius + structRadius + baseIslandGap;
+                    if ((placed[i].pos - point).sqrMagnitude < needed * needed) { ok = false; break; }
+                }
 
-                if (ok) { placed.Add(point); return true; }
+                if (ok)
+                {
+                    placed.Add(new PlacedEntry { pos = point, radius = structRadius });
+                    return true;
+                }
             }
             point = Vector3.zero;
             return false;
@@ -573,6 +825,9 @@ namespace Skyship
                 case CargoCategory.RepairCargo: return 40f;
                 case CargoCategory.SpecialCargo: return 25f;
                 case CargoCategory.Treasure: return 15f;
+                case CargoCategory.Stone: return 35f;
+                case CargoCategory.Ore: return 30f;
+                case CargoCategory.Crystal: return 18f;
                 default: return 20f;
             }
         }
@@ -586,6 +841,9 @@ namespace Skyship
                 case CargoCategory.RepairCargo: return 50f;
                 case CargoCategory.SpecialCargo: return 120f;
                 case CargoCategory.Treasure: return 250f;
+                case CargoCategory.Stone: return 10f;
+                case CargoCategory.Ore: return 45f;
+                case CargoCategory.Crystal: return 90f;
                 default: return 25f;
             }
         }
@@ -599,6 +857,9 @@ namespace Skyship
                 case CargoCategory.RepairCargo: return "Repair Parts";
                 case CargoCategory.SpecialCargo: return "Special Cargo";
                 case CargoCategory.Treasure: return "Treasure";
+                case CargoCategory.Stone: return "Stone";
+                case CargoCategory.Ore: return "Ore Chunk";
+                case CargoCategory.Crystal: return "Crystal Shard";
                 default: return "Cargo";
             }
         }
@@ -610,12 +871,25 @@ namespace Skyship
             hullMat = MakeMat(new Color(0.32f, 0.26f, 0.20f));
             wallMat = MakeMat(new Color(0.40f, 0.34f, 0.28f));
             debrisMat = MakeMat(new Color(0.22f, 0.20f, 0.18f));
+            islandTopMat = MakeMat(new Color(0.42f, 0.52f, 0.36f));
+            islandUnderMat = MakeMat(new Color(0.28f, 0.24f, 0.21f));
+            rootMat = MakeMat(new Color(0.35f, 0.27f, 0.20f));
+            stoneMat = MakeMat(new Color(0.68f, 0.68f, 0.66f));
+            oreMat = MakeMat(new Color(0.78f, 0.42f, 0.16f));
+            crystalMat = MakeMat(new Color(0.45f, 0.82f, 0.95f));
+            crystalMat.EnableKeyword("_EMISSION");
+            if (crystalMat.HasProperty("_EmissionColor"))
+                crystalMat.SetColor("_EmissionColor", new Color(0.18f, 0.45f, 0.60f));
+
             cargoMats.Clear();
             cargoMats[CargoCategory.RawResource] = MakeMat(new Color(0.80f, 0.62f, 0.36f));
             cargoMats[CargoCategory.Fuel] = MakeMat(new Color(0.20f, 0.75f, 0.35f));
             cargoMats[CargoCategory.Treasure] = MakeMat(new Color(0.95f, 0.80f, 0.18f));
             cargoMats[CargoCategory.RepairCargo] = MakeMat(new Color(0.30f, 0.55f, 0.90f));
             cargoMats[CargoCategory.SpecialCargo] = MakeMat(new Color(0.65f, 0.30f, 0.85f));
+            cargoMats[CargoCategory.Stone] = MakeMat(new Color(0.62f, 0.62f, 0.60f));
+            cargoMats[CargoCategory.Ore] = MakeMat(new Color(0.85f, 0.45f, 0.20f));
+            cargoMats[CargoCategory.Crystal] = MakeMat(new Color(0.50f, 0.85f, 0.95f));
             cargoMats[CargoCategory.Generic] = MakeMat(new Color(0.7f, 0.7f, 0.7f));
         }
 
@@ -635,7 +909,7 @@ namespace Skyship
         private void OnDrawGizmosSelected()
         {
             Gizmos.color = new Color(0.3f, 0.7f, 1f, 0.25f);
-            Gizmos.DrawWireCube(transform.position, volumeSize);
+            Gizmos.DrawWireCube(transform.position, worldExtent);
         }
 #endif
     }

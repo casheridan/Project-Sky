@@ -2695,6 +2695,7 @@ MonoBehaviour:
   updateRate: 0.05
   showImguiDebugHUD: 0
   puppetColor: {r: 1, g: 0.6470588, b: 0, a: 1}
+  fallRespawnDistance: 60
   isHost: 0
   isConnected: 0
   localPlayerId: 

@@ -44,6 +44,12 @@ namespace Skyship
 
             bool pickDropPressed = k != null && k.eKey.wasPressedThisFrame;
             bool dropClick = m != null && m.leftButton.wasPressedThisFrame;
+            bool chartViewPressed = k != null && k.fKey.wasPressedThisFrame;
+
+            // F aimed at the map table enters chart view (the table handles zoom/pan/exit while
+            // this component is suspended).
+            if (chartViewPressed && TryEnterChartView())
+                return;
 
             // E aimed at the steering wheel takes/releases the helm instead of touching cargo.
             if (pickDropPressed && TryToggleHelm())
@@ -51,7 +57,9 @@ namespace Skyship
 
             if (heldItem == null)
             {
-                if (pickDropPressed)
+                // Harvest takes priority over pickup: aiming at a resource node breaks a crate off
+                // it; otherwise fall through to normal cargo pickup.
+                if (pickDropPressed && !TryHarvestNode())
                     TryPickUp();
             }
             else
@@ -59,6 +67,53 @@ namespace Skyship
                 if (pickDropPressed || dropClick)
                     DropHeld();
             }
+        }
+
+        /// <summary>
+        /// If the interaction ray hits a ResourceNode, harvest one crate from it and return true.
+        /// Routed through the network manager: the authority harvests immediately, a connected
+        /// client asks the host and the crate appears with the HarvestResult packet.
+        /// </summary>
+        private bool TryHarvestNode()
+        {
+            if (!RaycastFromCamera(out RaycastHit hit)) return false;
+            var node = hit.collider.GetComponentInParent<ResourceNode>();
+            if (node == null) return false;
+            if (node.IsDepleted) return true; // spent husk: swallow the press, no crate
+
+            Vector3 forward = cameraTransform != null ? cameraTransform.forward : transform.forward;
+            var nm = NetworkManagerP2P.Instance;
+            if (nm != null)
+                nm.RequestHarvest(node, transform.position, forward);
+            else
+                HarvestLocally(node); // scene running without a network manager
+            return true;
+        }
+
+        private void HarvestLocally(ResourceNode node)
+        {
+            var gen = FindAnyObjectByType<WorldGenerator>();
+            if (gen == null) return;
+
+            string crateName = node.NextCargoName; // derive BEFORE consuming so the index matches
+            Vector3 forward = cameraTransform != null ? cameraTransform.forward : transform.forward;
+            Vector3 dropPos = ResourceNode.FindDropPoint(transform.position, forward, node.transform.position);
+
+            if (!node.TryConsumeOne()) return;
+            gen.SpawnCargoNamed(crateName, node.CargoCategory, dropPos);
+            Debug.Log($"[PlayerInteraction] Harvested '{crateName}' ({node.nodeType}) — " +
+                      $"{node.remainingYield}/{node.maxYield} left in node.");
+        }
+
+        /// <summary>If the interaction ray hits the map table, enter chart view and return true.</summary>
+        private bool TryEnterChartView()
+        {
+            if (!RaycastFromCamera(out RaycastHit hit)) return false;
+            var table = hit.collider.GetComponentInParent<ShipMapTable>();
+            if (table == null) return false;
+
+            table.ToggleView(gameObject);
+            return true;
         }
 
         /// <summary>If the interaction ray hits a ShipHelm, request the helm and return true.</summary>

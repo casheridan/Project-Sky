@@ -14,7 +14,11 @@ namespace Skyship
         Fuel,
         Treasure,
         RepairCargo,
-        SpecialCargo
+        SpecialCargo,
+        // Node-harvested raw resources (see ResourceNode). Appended so existing serialized values keep their meaning.
+        Stone,
+        Ore,
+        Crystal
     }
 
     /// <summary>

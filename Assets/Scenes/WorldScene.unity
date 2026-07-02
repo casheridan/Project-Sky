@@ -149,23 +149,38 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::Skyship.WorldGenerator
   seedOverride: 0
-  volumeSize: {x: 1600, y: 200, z: 1600}
-  minSpacing: 320
-  keepClearRadius: 170
+  worldExtent: {x: 8000, y: 700, z: 8000}
+  baseIslandGap: 600
+  spawnClearRadius: 400
   placementAttempts: 60
-  islandCount: 14
-  islandRadius: {x: 34, y: 72}
-  cargoPerIsland: {x: 3, y: 7}
-  islandFuelChance: 0.22
-  islandTreasureChance: 0.1
-  derelictCount: 4
+  veryLargeCount: {x: 1, y: 1}
+  veryLargeRadius: {x: 220, y: 280}
+  largeCount: {x: 2, y: 3}
+  largeRadius: {x: 140, y: 180}
+  mediumCount: {x: 6, y: 7}
+  mediumRadius: {x: 70, y: 110}
+  smallCount: {x: 9, y: 12}
+  smallRadius: {x: 30, y: 55}
+  looseLootPerIsland: {x: 0, y: 2}
+  looseTreasureChance: 0.35
+  nodesSmallIsland: {x: 1, y: 2}
+  nodesMediumIsland: {x: 2, y: 4}
+  nodesLargeIsland: {x: 4, y: 6}
+  nodesVeryLargeIsland: {x: 6, y: 9}
+  nodeYieldRange: {x: 3, y: 8}
+  derelictCountRange: {x: 2, y: 4}
   derelictLength: {x: 48, y: 78}
   derelictWidth: {x: 16, y: 26}
   derelictDeckHeight: 5
   cargoPerDerelict: {x: 5, y: 11}
+  cameraFarClip: 6500
+  fogStartDistance: 2500
+  fogEndDistance: 6000
+  fogColor: {r: 0.65, g: 0.72, b: 0.82, a: 1}
   usedSeed: 0
   spawnedIslands: 0
   spawnedDerelicts: 0
+  spawnedNodes: 0
   spawnedCargo: 0
   spawnedPrimitives: 0
 --- !u!4 &157431300
@@ -218,6 +233,7 @@ MonoBehaviour:
   updateRate: 0.05
   showImguiDebugHUD: 0
   puppetColor: {r: 1, g: 0.6470588, b: 0, a: 1}
+  fallRespawnDistance: 60
   isHost: 0
   isConnected: 0
   localPlayerId: 
@@ -552,8 +568,10 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::Skyship.FirstPersonController
   cameraTransform: {fileID: 2026450819}
   moveSpeed: 5
+  sprintMultiplier: 1.7
   jumpForce: 5
   gravity: -20
+  coyoteTime: 0.12
   lookSensitivity: 0.1
   minPitch: -89
   maxPitch: 89
