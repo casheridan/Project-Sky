@@ -43,6 +43,23 @@ namespace Skyship
         [Tooltip("How fast vertical speed bleeds off when lift input is released (hover settle).")]
         public float climbDecelerationRate = 3.5f;
 
+        [Header("Terrain Collision")]
+        [Tooltip("Stop the ship from flying through islands/derelicts by sweeping its volume before moving.")]
+        public bool collideWithTerrain = true;
+        [Tooltip("Layers the ship's hull collides with. Auto-set to the \"Terrain\" layer in Awake if left empty.")]
+        public LayerMask collisionMask;
+        [Tooltip("Center of the ship's collision box, in ShipRoot-local space. Conforms to the hull/deck " +
+                 "(not the tall envelope, which would otherwise hold the ship far off all terrain).")]
+        public Vector3 collisionBoxCenter = new Vector3(0f, 0.3f, 0f);
+        [Tooltip("Half-extents of the ship's collision box (hull + deck).")]
+        public Vector3 collisionBoxHalfExtents = new Vector3(6f, 3.4f, 16f);
+        [Tooltip("Small gap kept between the hull and terrain so casts don't get stuck overlapping.")]
+        public float collisionSkin = 0.15f;
+        [Tooltip("How far per frame the ship is pushed back out of terrain it has penetrated (e.g. after a turn).")]
+        public float depenetrationStep = 0.6f;
+        [Tooltip("How much momentum is kept (reversed) when the ship hits terrain. 0 = dead stop, 1 = full bounce.")]
+        [Range(0f, 1f)] public float bounceFactor = 0.4f;
+
         [Header("Runtime State (read-only)")]
         [Tooltip("Whether the ship currently has an active pilot at the helm.")]
         public bool inputEnabled = false;
@@ -57,10 +74,17 @@ namespace Skyship
         private float steerInput;    // -1..1, set externally via SetSteer
         private float liftInput;     // -1..1, set externally via SetLift (+ = climb)
 
+        private readonly Collider[] overlapBuffer = new Collider[16]; // reused by depenetration
+
         private void Awake()
         {
             if (balance == null)
                 balance = GetComponent<ShipBalanceController>();
+
+            // Default to the "Terrain" layer (islands/derelicts) if nothing is assigned. Falls back to
+            // 0 (collision disabled) if the layer doesn't exist, which is safe.
+            if (collisionMask.value == 0)
+                collisionMask = LayerMask.GetMask("Terrain");
         }
 
         private void Update()
@@ -95,8 +119,9 @@ namespace Skyship
                 currentSpeed = Mathf.MoveTowards(currentSpeed, 0f, decelerationRate * Time.deltaTime);
             }
 
-            // Move the ship forward based on current speed
-            transform.position += transform.forward * (currentSpeed * Time.deltaTime);
+            // Move the ship forward based on current speed (stopping at / bouncing off terrain).
+            if (!MoveWithCollision(transform.forward * (currentSpeed * Time.deltaTime)))
+                currentSpeed = -currentSpeed * bounceFactor; // rebound instead of an instant dead stop
 
             // ----------------------------------------------------
             // 2. ROTATIONAL MOMENTUM (YAW / TURNING)
@@ -118,7 +143,9 @@ namespace Skyship
                 currentTurnSpeed = Mathf.MoveTowards(currentTurnSpeed, 0f, turnDecelerationRate * Time.deltaTime);
             }
 
-            // Rotate the ship around its yaw axis based on current turn speed
+            // Rotate the ship around its yaw axis based on current turn speed. Because the hull box is
+            // long, yawing near terrain can swing the bow/stern INTO it — ResolveTerrainPenetration()
+            // (called at the end of this method) pushes the hull back out so it can't clip through.
             transform.Rotate(Vector3.up, currentTurnSpeed * Time.deltaTime, Space.World);
 
             // ----------------------------------------------------
@@ -137,12 +164,98 @@ namespace Skyship
                 currentClimbSpeed = Mathf.MoveTowards(currentClimbSpeed, 0f, climbDecelerationRate * Time.deltaTime);
             }
 
-            transform.position += Vector3.up * (currentClimbSpeed * Time.deltaTime);
+            // Climb/descend (stopping at / bouncing off terrain above/below).
+            if (!MoveWithCollision(Vector3.up * (currentClimbSpeed * Time.deltaTime)))
+                currentClimbSpeed = -currentClimbSpeed * bounceFactor;
+
+            // Final safety net: if any motion (especially a yaw) left the hull inside terrain, push it
+            // back out. This is what actually stops "turn into a wall and clip through".
+            ResolveTerrainPenetration();
+        }
+
+        /// <summary>
+        /// If the ship's hull box currently overlaps terrain, step it back out along the escape
+        /// direction until it's clear (a few sub-steps per frame). Bleeds momentum on contact so the
+        /// ship doesn't keep grinding in. Catches penetration from turning, fast moves, or spawning.
+        /// </summary>
+        private void ResolveTerrainPenetration()
+        {
+            if (!collideWithTerrain || collisionMask.value == 0) return;
+
+            bool hitTerrain = false;
+            for (int step = 0; step < 6; step++)
+            {
+                Vector3 worldCenter = transform.TransformPoint(collisionBoxCenter);
+                int n = Physics.OverlapBoxNonAlloc(worldCenter, collisionBoxHalfExtents, overlapBuffer,
+                    transform.rotation, collisionMask, QueryTriggerInteraction.Ignore);
+                if (n == 0) break;
+
+                hitTerrain = true;
+                Vector3 push = Vector3.zero;
+                for (int i = 0; i < n; i++)
+                {
+                    Collider col = overlapBuffer[i];
+                    Vector3 closest = col.ClosestPoint(worldCenter);
+                    Vector3 away = worldCenter - closest;
+                    if (away.sqrMagnitude < 1e-4f) away = worldCenter - col.bounds.center; // deep inside / concave fallback
+                    if (away.sqrMagnitude > 1e-6f) push += away.normalized;
+                }
+                if (push.sqrMagnitude < 1e-6f) break;
+
+                transform.position += push.normalized * depenetrationStep;
+            }
+
+            if (hitTerrain)
+            {
+                // Rebound: bleed momentum so we don't immediately drive back into the terrain.
+                currentSpeed = -currentSpeed * bounceFactor;
+                currentClimbSpeed = -currentClimbSpeed * bounceFactor;
+                currentTurnSpeed = -currentTurnSpeed * bounceFactor;
+            }
+        }
+
+
+        /// <summary>
+        /// Move the ship by <paramref name="delta"/>, but sweep the hull box first and clamp at the
+        /// first terrain hit so the ship can't pass through islands/derelicts. Returns false if the
+        /// move was blocked. Yaw-only ShipRoot rotation keeps the box axis-aligned to the ship.
+        /// </summary>
+        private bool MoveWithCollision(Vector3 delta)
+        {
+            float dist = delta.magnitude;
+            if (!collideWithTerrain || collisionMask.value == 0 || dist < 1e-5f)
+            {
+                transform.position += delta;
+                return true;
+            }
+
+            Vector3 dir = delta / dist;
+            Vector3 worldCenter = transform.TransformPoint(collisionBoxCenter);
+            if (Physics.BoxCast(worldCenter, collisionBoxHalfExtents, dir, out RaycastHit hit,
+                    transform.rotation, dist + collisionSkin, collisionMask, QueryTriggerInteraction.Ignore))
+            {
+                float allowed = Mathf.Max(0f, hit.distance - collisionSkin);
+                transform.position += dir * allowed;
+                return false;
+            }
+
+            transform.position += delta;
+            return true;
         }
 
         // --- Pilot input, pushed in by NetworkManagerP2P each frame (host-authoritative) ---
         public void SetThrottle(float value) => throttleInput = Mathf.Clamp(value, -1f, 1f);
         public void SetSteer(float value) => steerInput = Mathf.Clamp(value, -1f, 1f);
         public void SetLift(float value) => liftInput = Mathf.Clamp(value, -1f, 1f);
+
+#if UNITY_EDITOR
+        private void OnDrawGizmosSelected()
+        {
+            if (!collideWithTerrain) return;
+            Gizmos.color = new Color(1f, 0.5f, 0.2f, 0.5f);
+            Gizmos.matrix = Matrix4x4.TRS(transform.TransformPoint(collisionBoxCenter), transform.rotation, Vector3.one);
+            Gizmos.DrawWireCube(Vector3.zero, collisionBoxHalfExtents * 2f);
+        }
+#endif
     }
 }

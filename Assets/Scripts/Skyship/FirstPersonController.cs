@@ -27,8 +27,13 @@ namespace Skyship
 
         [Header("Movement")]
         public float moveSpeed = 5f;
+        [Tooltip("Walk speed is multiplied by this while holding Sprint (Left Shift).")]
+        public float sprintMultiplier = 1.7f;
         public float jumpForce = 5f;
         public float gravity = -20f;
+        [Tooltip("Grace window after leaving the ground where a jump still registers. Also bridges the " +
+                 "1-frame isGrounded flicker caused by the ship deck-follow, so you can jump on a moving ship.")]
+        public float coyoteTime = 0.12f;
 
         [Header("Look")]
         [Tooltip("Mouse look sensitivity (degrees per unit of mouse delta).")]
@@ -47,6 +52,7 @@ namespace Skyship
         private CharacterController controller;
         private float verticalVelocity;
         private float pitch;
+        private float coyoteTimer;
 
         private void Awake()
         {
@@ -102,18 +108,30 @@ namespace Skyship
             Vector3 move = transform.right * input.x + transform.forward * input.y;
             if (move.sqrMagnitude > 1f) move.Normalize();
 
+            var k = Keyboard.current;
+            bool sprinting = k != null && k.leftShiftKey.isPressed;
+            float speed = sprinting ? moveSpeed * sprintMultiplier : moveSpeed;
+
+            // Coyote time: keep "grounded" briefly after contact so a single-frame isGrounded flicker
+            // (from the deck-follow moving us) doesn't swallow the jump on a moving ship.
             if (controller.isGrounded)
             {
+                coyoteTimer = coyoteTime;
                 verticalVelocity = -1f; // small downward bias keeps us grounded
-                if (enableJump && Keyboard.current != null && Keyboard.current.spaceKey.wasPressedThisFrame)
-                    verticalVelocity = jumpForce;
             }
             else
             {
+                coyoteTimer -= Time.deltaTime;
                 verticalVelocity += gravity * Time.deltaTime;
             }
 
-            Vector3 velocity = move * moveSpeed + Vector3.up * verticalVelocity;
+            if (enableJump && k != null && k.spaceKey.wasPressedThisFrame && coyoteTimer > 0f)
+            {
+                verticalVelocity = jumpForce;
+                coyoteTimer = 0f; // consume so we can't double-jump
+            }
+
+            Vector3 velocity = move * speed + Vector3.up * verticalVelocity;
             controller.Move(velocity * Time.deltaTime);
         }
 

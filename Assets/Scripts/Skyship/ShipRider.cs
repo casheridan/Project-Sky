@@ -32,6 +32,8 @@ namespace Skyship
         private Transform deck;           // = ShipVisualRoot of the deck we stand on
         private Matrix4x4 prevDeckMatrix; // deck world matrix captured last frame
         private float prevDeckYaw;
+        private Vector3 deckVelocity;     // world velocity of the deck at our position (while riding)
+        private Vector3 airborneCarry;    // horizontal momentum kept after jumping off a moving deck
 
         /// <summary>True while the player is standing on (and being carried by) a deck.</summary>
         public bool IsRiding => isRiding;
@@ -53,6 +55,7 @@ namespace Skyship
             {
                 deck = null;
                 isRiding = false;
+                airborneCarry = Vector3.zero;
                 return;
             }
 
@@ -61,34 +64,56 @@ namespace Skyship
             // Boarding / leaving / switching decks: re-baseline so the first frame has no pop.
             if (foundDeck != deck)
             {
+                // Leaving a moving deck (jumped high or walked off the edge): keep its horizontal
+                // velocity so a jump on a moving ship lands back in the same spot, instead of the ship
+                // sliding out from under us.
+                if (foundDeck == null && deck != null)
+                    airborneCarry = new Vector3(deckVelocity.x, 0f, deckVelocity.z);
+
                 deck = foundDeck;
                 isRiding = deck != null;
                 if (deck != null)
                 {
                     prevDeckMatrix = deck.localToWorldMatrix;
                     prevDeckYaw = deck.rotation.eulerAngles.y;
+                    deckVelocity = Vector3.zero;
+                    airborneCarry = Vector3.zero; // back on a deck; deck-follow carries us now
+                    return;
                 }
+            }
+
+            if (deck != null)
+            {
+                // Where the player sat on the deck last frame, mapped to where that point is now.
+                Vector3 localPos = prevDeckMatrix.inverse.MultiplyPoint3x4(transform.position);
+                Vector3 newWorld = deck.localToWorldMatrix.MultiplyPoint3x4(localPos);
+                Vector3 deckDelta = newWorld - transform.position;
+                if (deckDelta.sqrMagnitude > 0f)
+                    controller.Move(deckDelta); // translation + yaw arc + tilt-slide in one shot
+
+                // Remember the deck's world velocity at our position, so a jump keeps that momentum.
+                if (Time.deltaTime > 0f)
+                    deckVelocity = Vector3.Lerp(deckVelocity, deckDelta / Time.deltaTime, 0.5f);
+
+                // Turn the body with the ship's yaw only (never pitch/roll, so the camera
+                // stays upright while the deck tilts beneath the player).
+                float curYaw = deck.rotation.eulerAngles.y;
+                float yawDelta = Mathf.DeltaAngle(prevDeckYaw, curYaw);
+                if (Mathf.Abs(yawDelta) > 0.0001f)
+                    transform.Rotate(Vector3.up, yawDelta, Space.World);
+
+                prevDeckMatrix = deck.localToWorldMatrix;
+                prevDeckYaw = curYaw;
                 return;
             }
 
-            if (deck == null) return;
-
-            // Where the player sat on the deck last frame, mapped to where that point is now.
-            Vector3 localPos = prevDeckMatrix.inverse.MultiplyPoint3x4(transform.position);
-            Vector3 newWorld = deck.localToWorldMatrix.MultiplyPoint3x4(localPos);
-            Vector3 deckDelta = newWorld - transform.position;
-            if (deckDelta.sqrMagnitude > 0f)
-                controller.Move(deckDelta); // translation + yaw arc + tilt-slide in one shot
-
-            // Turn the body with the ship's yaw only (never pitch/roll, so the camera
-            // stays upright while the deck tilts beneath the player).
-            float curYaw = deck.rotation.eulerAngles.y;
-            float yawDelta = Mathf.DeltaAngle(prevDeckYaw, curYaw);
-            if (Mathf.Abs(yawDelta) > 0.0001f)
-                transform.Rotate(Vector3.up, yawDelta, Space.World);
-
-            prevDeckMatrix = deck.localToWorldMatrix;
-            prevDeckYaw = curYaw;
+            // Airborne after leaving a moving deck: keep carrying its horizontal momentum until we
+            // touch down again (either back on the deck above, or on solid ground).
+            if (airborneCarry.sqrMagnitude > 0.0001f)
+            {
+                controller.Move(airborneCarry * Time.deltaTime);
+                if (controller.isGrounded) airborneCarry = Vector3.zero;
+            }
         }
 
         /// <summary>

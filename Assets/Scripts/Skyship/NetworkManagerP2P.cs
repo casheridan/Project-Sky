@@ -87,6 +87,11 @@ namespace Skyship
         [Tooltip("Material given to remote player puppet spheres.")]
         public Color puppetColor = Color.orange;
 
+        [Header("Testing")]
+        [Tooltip("If the local player falls this far below the ship's deck, snap them back onto the mid " +
+                 "deck. Temporary fall-safety while testing (becomes a death barrier later). 0 disables.")]
+        public float fallRespawnDistance = 60f;
+
         [Header("Runtime Connection Info (read-only)")]
         public bool isHost;
         public bool isConnected;
@@ -290,6 +295,38 @@ namespace Skyship
             var items = GameObject.FindObjectsByType<CargoItem>(FindObjectsInactive.Exclude);
             foreach (var item in items)
                 localCargoItems[item.name] = item;
+        }
+
+        /// <summary>
+        /// Collect cargo currently HELD by players who are standing on the ship (the local player plus
+        /// any remote puppets riding the deck). ShipBalanceController uses this so a carried crate still
+        /// counts toward weight/tilt at the carrier's position — instead of being weightless until it's
+        /// dropped. Host/solo only in practice (balance runs on the authority).
+        /// </summary>
+        public void CollectAboardHeldCargo(List<CargoItem> results)
+        {
+            if (results == null) return;
+            results.Clear();
+
+            // Local player counts as aboard when its ShipRider is riding the deck.
+            if (localPlayer != null && localRider != null && localRider.IsRiding)
+            {
+                var pi = localPlayer.GetComponent<PlayerInteraction>();
+                if (pi != null && pi.HeldItem != null) results.Add(pi.HeldItem);
+            }
+
+            // Remote players: an aboard puppet is parented under shipVisualRoot, and its held cargo is a
+            // child of the puppet (see SyncRemoteCargoHold).
+            if (shipVisualRoot != null)
+            {
+                foreach (var kvp in remotePuppets)
+                {
+                    var puppet = kvp.Value;
+                    if (puppet == null || !puppet.transform.IsChildOf(shipVisualRoot)) continue;
+                    var held = puppet.GetComponentInChildren<CargoItem>();
+                    if (held != null && held.isHeld) results.Add(held);
+                }
+            }
         }
 
         private void Update()

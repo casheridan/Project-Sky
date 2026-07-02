@@ -65,6 +65,9 @@ namespace Skyship
         [Tooltip("0..1 strain from overload + imbalance, for warnings/FX.")]
         public float engineStrain;
 
+        // Reused each frame to avoid allocations when gathering cargo held by aboard players.
+        private readonly List<CargoItem> heldAboard = new List<CargoItem>();
+
         private void Start()
         {
             if (platformArea == null)
@@ -112,6 +115,33 @@ namespace Skyship
                     pitchTorque += w * relativePos.z;
 
                     // Bin into directional weights for inspector-friendly diagnostics
+                    if (relativePos.x < -0.1f) leftWeight += w;
+                    else if (relativePos.x > 0.1f) rightWeight += w;
+
+                    if (relativePos.z > 0.1f) frontWeight += w;
+                    else if (relativePos.z < -0.1f) rearWeight += w;
+                }
+            }
+
+            // Also count cargo currently HELD by players standing on the deck, at the carrier's
+            // position. This makes carrying a crate tip the ship toward the carrier (only while
+            // carrying), and stops a held crate from dodging its weight until it's set down.
+            var nm = NetworkManagerP2P.Instance;
+            if (nm != null)
+            {
+                nm.CollectAboardHeldCargo(heldAboard);
+                for (int i = 0; i < heldAboard.Count; i++)
+                {
+                    CargoItem item = heldAboard[i];
+                    if (item == null) continue;
+
+                    float w = item.weight;
+                    totalWeight += w;
+
+                    Vector3 relativePos = shipVisualRoot.InverseTransformPoint(item.transform.position);
+                    rollTorque += w * relativePos.x;
+                    pitchTorque += w * relativePos.z;
+
                     if (relativePos.x < -0.1f) leftWeight += w;
                     else if (relativePos.x > 0.1f) rightWeight += w;
 

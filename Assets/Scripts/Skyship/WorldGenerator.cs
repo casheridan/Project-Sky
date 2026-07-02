@@ -67,6 +67,7 @@ namespace Skyship
 
         private System.Random rng;
         private int cargoCounter;
+        private int terrainLayer = -1; // structures go on this layer so the ship's hull collides with them
         private readonly List<Vector3> placed = new List<Vector3>();
 
         private Material rockMat, rockDarkMat, hullMat, wallMat, debrisMat;
@@ -90,6 +91,9 @@ namespace Skyship
             spawnedIslands = spawnedDerelicts = spawnedCargo = spawnedPrimitives = 0;
             placed.Clear();
             BuildMaterials();
+            // Islands/derelicts go on the "Terrain" layer so the ship's hull collides with them
+            // (loose cargo stays on the default layer, so it doesn't block the ship).
+            terrainLayer = LayerMask.NameToLayer("Terrain");
 
             // Fixed order: all islands, then all derelicts (identical on every peer).
             for (int i = 0; i < islandCount; i++) SpawnIsland(i);
@@ -118,6 +122,7 @@ namespace Skyship
 
             BuildIslandBody(island.transform, radius);
             BuildIslandObstacles(island.transform, radius);
+            SetLayerRecursive(island, terrainLayer); // solid terrain (cargo, added next, stays default)
             ScatterIslandCargo(island.transform, radius);
 
             spawnedIslands++;
@@ -235,6 +240,7 @@ namespace Skyship
             BuildDerelictHull(derelict.transform, length, width, h);
             BuildDerelictInterior(derelict.transform, length, width, h);
             BuildDerelictSuperstructure(derelict.transform, length, width, h);
+            SetLayerRecursive(derelict, terrainLayer); // solid terrain (cargo, added next, stays default)
             ScatterDerelictCargo(derelict.transform, length, width);
 
             spawnedDerelicts++;
@@ -515,6 +521,14 @@ namespace Skyship
             {
                 Box(parent, new Vector3(x, height * 0.5f, zCenter), new Vector3(thickness, height, zLen), Vector3.zero, mat, name);
             }
+        }
+
+        /// <summary>Put a structure and all its parts on the given layer (skips if the layer is missing).</summary>
+        private void SetLayerRecursive(GameObject go, int layer)
+        {
+            if (layer < 0) return;
+            go.layer = layer;
+            foreach (Transform child in go.transform) SetLayerRecursive(child.gameObject, layer);
         }
 
         private bool TryPickPoint(out Vector3 point)
