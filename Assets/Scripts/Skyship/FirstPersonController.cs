@@ -90,6 +90,14 @@ namespace Skyship
             }
         }
 
+        /// <summary>Zero out accumulated fall velocity (used by teleports/respawns so the player
+        /// doesn't arrive still falling at terminal speed).</summary>
+        public void CancelFall()
+        {
+            verticalVelocity = 0f;
+            coyoteTimer = 0f;
+        }
+
         private void HandleLook()
         {
             if (Mouse.current == null || cameraTransform == null) return;

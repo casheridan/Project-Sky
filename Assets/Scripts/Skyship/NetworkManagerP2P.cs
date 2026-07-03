@@ -122,8 +122,9 @@ namespace Skyship
         public Color puppetColor = Color.orange;
 
         [Header("Testing")]
-        [Tooltip("If the local player falls this far below the ship's deck, snap them back onto the mid " +
-                 "deck. Temporary fall-safety while testing (becomes a death barrier later). 0 disables.")]
+        [Tooltip("If the local player falls this far below the ship, snap them back onto the LOWER " +
+                 "deck (cabin floor). Temporary fall-safety while testing (becomes a death barrier " +
+                 "later). 0 disables.")]
         public float fallRespawnDistance = 60f;
 
         [Header("Runtime Connection Info (read-only)")]
@@ -276,6 +277,49 @@ namespace Skyship
             if (cc != null) cc.enabled = false;
             localPlayer.transform.position = worldPos;
             if (cc != null) cc.enabled = true;
+        }
+
+        /// <summary>
+        /// Fall safety: if the local player has dropped fallRespawnDistance below the ship,
+        /// put them back on the LOWER deck (cabin floor). Skipped while seated at the helm
+        /// (parented + CharacterController off — they can't fall).
+        /// </summary>
+        private void CheckFallRespawn()
+        {
+            if (fallRespawnDistance <= 0.01f || localPlayer == null || shipTransform == null) return;
+
+            var cc = localPlayer.GetComponent<CharacterController>();
+            if (cc == null || !cc.enabled) return; // seated/piloting or otherwise locked
+
+            if (localPlayer.transform.position.y >= shipTransform.position.y - fallRespawnDistance)
+                return;
+
+            TeleportLocalPlayer(LowerDeckRespawnPoint());
+
+            // Arrive standing, not still falling at terminal velocity.
+            var fpc = localPlayer.GetComponent<FirstPersonController>();
+            if (fpc != null) fpc.CancelFall();
+
+            ShowBanner("You fell overboard — back to the lower deck.", 4f);
+        }
+
+        /// <summary>Center of the lower cabin floor, found from the prefab's LowerDeck_Floor slab
+        /// (falls back to spots that always exist if the prefab changes).</summary>
+        private Vector3 LowerDeckRespawnPoint()
+        {
+            if (shipVisualRoot != null)
+            {
+                foreach (Transform child in shipVisualRoot)
+                {
+                    if (child.name != "LowerDeck_Floor") continue;
+                    var r = child.GetComponent<Renderer>();
+                    if (r != null)
+                        return r.bounds.center + Vector3.up * (r.bounds.extents.y + 0.3f);
+                    return child.position + Vector3.up * 1f;
+                }
+                return shipVisualRoot.position + Vector3.up * 0.5f;
+            }
+            return shipTransform.position + Vector3.up * 6f;
         }
 
         /// <summary>(Re)resolve per-scene references. Safe to call in any scene (fields go null if absent).</summary>
@@ -490,6 +534,9 @@ namespace Skyship
             //    steering input into the ship every frame.
             if (LocalAuthority)
                 DriveShipFromPilot();
+
+            // Fall safety: anyone who drops too far below the ship gets put back on the lower deck.
+            CheckFallRespawn();
 
             // 3. Periodically send local state to connected peers
             if (isConnected && Time.time >= nextSendTime)

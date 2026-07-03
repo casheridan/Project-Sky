@@ -5,10 +5,10 @@ using UnityEngine.InputSystem;
 namespace Skyship
 {
     /// <summary>
-    /// A 3D miniature diorama of the generated world, built at runtime on top of the ship's
-    /// lower-cabin desk: one marker per island (sized/colored by tier) and derelict, plus a live
-    /// ship marker that tracks the real ship's position and heading. Everyone aboard can read it —
-    /// no UI screens, Sea-of-Thieves style.
+    /// A flat 2D chart of the generated world, built at runtime on top of the ship's lower-cabin
+    /// desk: one flat marker per island (sized/colored by tier) and derelict lying on the board
+    /// like a paper map, plus a live ship arrow that tracks the real ship's position and heading.
+    /// Everyone aboard can read it — no UI screens, Sea-of-Thieves style.
     ///
     /// CHART VIEW: press F while looking at the table (PlayerInteraction routes it here) to put
     /// the camera overhead — E/Q zoom in/out, WASD pans, F returns to first person. The local
@@ -25,7 +25,6 @@ namespace Skyship
     {
         [Header("Board (read-only, set at build time)")]
         [SerializeField] private float boardWidth = 1.3f;
-        [SerializeField] private float altitudeExaggeration = 3f;
 
         [Header("Chart View")]
         [Tooltip("Camera height above the board when fully zoomed IN (E).")]
@@ -137,22 +136,36 @@ namespace Skyship
 
             markerRoot = new GameObject("Markers").transform;
             markerRoot.SetParent(transform, false);
-            markerRoot.localPosition = new Vector3(0f, 0.06f, 0f); // marker plane floats above the board
+            markerRoot.localPosition = new Vector3(0f, 0.022f, 0f); // just above the board face (no z-fighting)
 
             foreach (var s in structures)
                 BuildMarker(s);
 
-            // Live ship marker: a bright arrow-ish cone showing position + heading.
-            var shipGo = GameObject.CreatePrimitive(PrimitiveType.Capsule);
-            shipGo.name = "ShipMarker";
-            Destroy(shipGo.GetComponent<Collider>());
+            // Live ship marker: a flat glowing arrow (shaft + nose dot) lying on the chart,
+            // spun to the ship's heading.
+            var shipGo = new GameObject("ShipMarker");
             shipGo.transform.SetParent(markerRoot, false);
-            shipGo.transform.localScale = new Vector3(0.015f, 0.03f, 0.015f);
             var mat = MakeMat(new Color(1f, 0.45f, 0.1f));
             mat.EnableKeyword("_EMISSION");
             if (mat.HasProperty("_EmissionColor"))
                 mat.SetColor("_EmissionColor", new Color(0.9f, 0.35f, 0.05f));
-            shipGo.GetComponent<Renderer>().sharedMaterial = mat;
+
+            var shaft = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            shaft.name = "Shaft";
+            Destroy(shaft.GetComponent<Collider>());
+            shaft.transform.SetParent(shipGo.transform, false);
+            shaft.transform.localScale = new Vector3(0.012f, 0.004f, 0.034f);
+            shaft.GetComponent<Renderer>().sharedMaterial = mat;
+
+            var nose = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            nose.name = "Nose";
+            Destroy(nose.GetComponent<Collider>());
+            nose.transform.SetParent(shipGo.transform, false);
+            nose.transform.localPosition = new Vector3(0f, 0f, 0.022f);
+            nose.transform.localRotation = Quaternion.Euler(0f, 45f, 0f); // diamond tip = "this way"
+            nose.transform.localScale = new Vector3(0.016f, 0.004f, 0.016f);
+            nose.GetComponent<Renderer>().sharedMaterial = mat;
+
             shipMarker = shipGo.transform;
         }
 
@@ -166,10 +179,11 @@ namespace Skyship
             marker.transform.localPosition = WorldToBoard(s.position);
 
             // Marker footprint tracks the real radius, clamped so small islands stay findable.
+            // Paper-thin: everything lies flat on the chart.
             float d = Mathf.Max(s.radius * 2f * worldToBoard, 0.012f);
             marker.transform.localScale = s.kind == MapStructureKind.Derelict
-                ? new Vector3(d, 0.008f, d * 1.6f) // elongated hull silhouette
-                : new Vector3(d, 0.004f, d);       // flat island disc
+                ? new Vector3(d, 0.003f, d * 1.6f) // elongated hull silhouette
+                : new Vector3(d, 0.0015f, d);      // flat island disc
 
             marker.GetComponent<Renderer>().sharedMaterial = MakeMat(ColorFor(s.kind));
         }
@@ -186,13 +200,12 @@ namespace Skyship
             }
         }
 
-        /// <summary>World position → board-local marker position (altitude exaggerated for readability).</summary>
+        /// <summary>World position → board-local marker position. 2D chart: altitude is dropped —
+        /// everything projects flat onto the board plane.</summary>
         private Vector3 WorldToBoard(Vector3 world)
         {
             Vector3 rel = world - worldCenter;
-            return new Vector3(rel.x * worldToBoard,
-                               rel.y * worldToBoard * altitudeExaggeration,
-                               rel.z * worldToBoard);
+            return new Vector3(rel.x * worldToBoard, 0f, rel.z * worldToBoard);
         }
 
         private void Update()
