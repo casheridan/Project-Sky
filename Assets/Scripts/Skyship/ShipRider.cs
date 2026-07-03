@@ -7,15 +7,24 @@ namespace Skyship
     /// parenting the CharacterController (parenting a CharacterController to a
     /// translating+rotating transform fights its own world-space Move and jitters).
     ///
-    /// Instead, every LateUpdate — AFTER the ship has moved (ShipMovementController.Update)
-    /// and tilted (ShipBalanceController.Update) this frame — we sample the deck's rigid
-    /// motion at the point the player occupies and feed that delta to controller.Move.
-    /// The CharacterController stays the sole authority over the player's world position,
-    /// so gravity, grounding and walking input keep working unchanged.
+    /// Every frame we sample the deck's rigid motion at the point the player occupies and
+    /// feed that delta to controller.Move. The CharacterController stays the sole authority
+    /// over the player's world position, so gravity, grounding and walking input keep
+    /// working unchanged.
+    ///
+    /// EXECUTION ORDER (the anti-jitter contract): all ship movers run at negative order
+    /// (NetworkManagerP2P -110 → ShipMovementController -100 → ShipBalanceController -90),
+    /// this carry runs at -50, and FirstPersonController runs at the default 0. That way the
+    /// carry always lands BETWEEN the deck's motion and the player's own Move: the player's
+    /// gravity/grounding settles against the deck's final pose for the frame. (Previously the
+    /// carry ran in LateUpdate — the player's Move then happened while the freshly-moved deck
+    /// overlapped the capsule, and the depenetration pop + carry stacked into a visible
+    /// vibration during climbs/descents/decel.)
     ///
     /// SCENE SETUP: add to the Player GameObject (alongside FirstPersonController).
     /// No references to wire — the deck is found by a short downward raycast.
     /// </summary>
+    [DefaultExecutionOrder(-50)]
     [RequireComponent(typeof(CharacterController))]
     public class ShipRider : MonoBehaviour
     {
@@ -47,8 +56,18 @@ namespace Skyship
             fpc = GetComponent<FirstPersonController>();
         }
 
-        private void LateUpdate()
+        private void Update()
         {
+            // The ship movers (negative execution order) just wrote fresh transform poses this
+            // frame, but with Physics.autoSyncTransforms OFF the ship's COLLIDERS still sit at
+            // the last fixed-step pose — up to a full frame stale (~25 cm at climb speed) on
+            // frames without a physics step. Every controller.Move below (ours and
+            // FirstPersonController's) would collide/ground against that stale deck: descending,
+            // the stale collider props the player above the visual deck; climbing, grounding
+            // flickers and gravity winds up, then pops. Push the fresh poses into the physics
+            // scene before anyone moves.
+            Physics.SyncTransforms();
+
             // Don't carry while seated/piloting (player is parented to the seat and the
             // CharacterController is disabled) or whenever the controller is off.
             if (controller == null || !controller.enabled || (fpc != null && !fpc.allowMovement))
@@ -123,8 +142,17 @@ namespace Skyship
         /// </summary>
         private Transform DetectDeck()
         {
+            // While riding a DESCENDING deck, the deck can drop more than a ray-length in a
+            // single frame (fast descent + a frame spike: GC, loading, editor hitch). If the
+            // probe misses once, the ride breaks and the player free-falls until gravity
+            // catches them back down — the "mini jump". Stretch the probe by the deck's known
+            // downward travel this frame so the carry below maps us straight back onto it.
+            float reach = groundCheckDistance + 0.1f;
+            if (deck != null && deckVelocity.y < 0f)
+                reach += -deckVelocity.y * Mathf.Max(Time.deltaTime, 0.001f) * 1.5f + 0.5f;
+
             Vector3 origin = transform.position + Vector3.up * 0.1f;
-            var hits = Physics.RaycastAll(origin, Vector3.down, groundCheckDistance + 0.1f, ~0, QueryTriggerInteraction.Ignore);
+            var hits = Physics.RaycastAll(origin, Vector3.down, reach, ~0, QueryTriggerInteraction.Ignore);
             for (int i = 0; i < hits.Length; i++)
             {
                 var balance = hits[i].collider.GetComponentInParent<ShipBalanceController>();

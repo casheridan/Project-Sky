@@ -55,6 +55,7 @@ namespace Skyship
         private PlayerInteraction viewerInteraction;
         private float viewHeight;
         private Vector2 panOffset; // board-local XZ
+        private int exitedFrame = -1; // guards F-exit against a same-frame re-enter
 
         public bool IsViewing => viewing;
 
@@ -214,7 +215,9 @@ namespace Skyship
         public void ToggleView(GameObject player)
         {
             if (viewing) ExitView();
-            else EnterView(player);
+            // Same-frame guard: when our Update just exited on this very F press, don't let a
+            // re-enabled PlayerInteraction (running later in the frame) re-enter from that press.
+            else if (Time.frameCount != exitedFrame) EnterView(player);
         }
 
         private void EnterView(GameObject player)
@@ -250,6 +253,7 @@ namespace Skyship
         private void ExitView()
         {
             viewing = false;
+            exitedFrame = Time.frameCount;
             if (viewCamera != null)
             {
                 viewCamera.SetParent(camOrigParent, false);

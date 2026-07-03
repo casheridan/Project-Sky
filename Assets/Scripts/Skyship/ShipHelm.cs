@@ -3,14 +3,14 @@ using UnityEngine;
 namespace Skyship
 {
     /// <summary>
-    /// The ship's steering wheel. A player presses E while looking at it to take the
+    /// The ship's steering wheel. A player presses F while looking at it to take the
     /// helm; only ONE player may pilot at a time (arbitrated by NetworkManagerP2P, which
     /// owns the authoritative currentPilotId). Taking the helm seats the local player at
     /// the PilotSeat anchor and locks their walking (mouse-look stays free), like sitting
-    /// in a chair. Pressing E again releases the helm.
+    /// in a chair. Pressing F again releases the helm.
     ///
     /// This component only performs the LOCAL seat/unseat of the local player; the network
-    /// claim/release lock lives in NetworkManagerP2P. PlayerInteraction routes the E press
+    /// claim/release lock lives in NetworkManagerP2P. PlayerInteraction routes the F press
     /// here via NetworkManagerP2P.ToggleLocalHelm().
     ///
     /// SCENE SETUP:
@@ -42,6 +42,14 @@ namespace Skyship
                 Transform found = transform.Find("PilotSeat");
                 pilotSeat = found != null ? found : transform;
             }
+
+            // Deck stations, built procedurally (idempotent): the engine telegraph starboard of
+            // the wheel, the spring-loaded lift lever port of it, and the boarding ramp + button
+            // on the port deck edge amidships.
+            ShipThrottleLever.CreateNear(transform);
+            ShipLiftLever.CreateNear(transform);
+            var balance = GetComponentInParent<ShipBalanceController>();
+            if (balance != null) ShipBoardingRamp.CreateOnShip(balance);
         }
 
         /// <summary>Seat the local player at the helm and lock their walking (look stays on).</summary>

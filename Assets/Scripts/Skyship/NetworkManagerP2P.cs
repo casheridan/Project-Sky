@@ -22,6 +22,10 @@ namespace Skyship
     ///
     /// Uses thread-safe queues to marshal received socket data safely to the Unity main thread.
     /// </summary>
+    // Anti-jitter execution chain (see ShipRider): runs FIRST so packet processing (which lerps
+    // the ship transform on clients) and pilot-input feed land before ship movement (-100),
+    // tilt (-90), the deck-carry (-50), and the player's own move (0).
+    [DefaultExecutionOrder(-110)]
     public class NetworkManagerP2P : MonoBehaviour
     {
         [System.Serializable]
@@ -78,6 +82,17 @@ namespace Skyship
             public int worldSeed; // host->clients (StartGame): seed for deterministic world generation
             public string pilotId; // host->clients (State): id of the player currently at the helm ("" = nobody)
             public float hubCountdown = -1f; // host->clients (State): seconds left on the hub launch countdown (-1 = not counting)
+
+            // Engine telegraph (client->host "SetThrottle" request; host->clients in State).
+            // -1 = not included (client State packets never carry a stage).
+            public int throttleStage = -1;
+
+            // Lift lever (client->host "SetLift" request; host->clients in State). -1 = not included.
+            public int liftStage = -1;
+
+            // Boarding ramp (client->host "SetRamp" request; host->clients in State).
+            // -1 = not included, 0 = stowed, 1 = deployed.
+            public int rampDeployed = -1;
 
             // Resource-node harvesting (client->host "HarvestRequest", host->clients "HarvestResult").
             public string harvestNodeId;
@@ -163,6 +178,24 @@ namespace Skyship
         private ShipPlatformArea shipPlatformArea;
         private ShipFailureMonitor shipFailureMonitor;
         private ShipHelm shipHelm;
+        private ShipThrottleLever shipThrottleLever;
+        private ShipLiftLever shipLiftLever;
+        private ShipBoardingRamp shipBoardingRamp;
+
+        /// <summary>The ship's telegraph (built at runtime by ShipHelm, so bind lazily).</summary>
+        private ShipThrottleLever Lever
+            => shipThrottleLever != null ? shipThrottleLever
+             : (shipThrottleLever = UnityEngine.Object.FindAnyObjectByType<ShipThrottleLever>());
+
+        /// <summary>The ship's lift lever (built at runtime by ShipHelm, so bind lazily).</summary>
+        private ShipLiftLever LiftLever
+            => shipLiftLever != null ? shipLiftLever
+             : (shipLiftLever = UnityEngine.Object.FindAnyObjectByType<ShipLiftLever>());
+
+        /// <summary>The ship's boarding ramp (built at runtime by ShipHelm, so bind lazily).</summary>
+        private ShipBoardingRamp Ramp
+            => shipBoardingRamp != null ? shipBoardingRamp
+             : (shipBoardingRamp = UnityEngine.Object.FindAnyObjectByType<ShipBoardingRamp>());
 
         // Steering-wheel piloting. The host owns the authoritative pilot lock; clients learn it
         // from the host's State packets. Empty string = nobody is at the helm.
@@ -272,6 +305,9 @@ namespace Skyship
             }
 
             shipHelm = UnityEngine.Object.FindAnyObjectByType<ShipHelm>();
+            shipThrottleLever = UnityEngine.Object.FindAnyObjectByType<ShipThrottleLever>();
+            shipLiftLever = UnityEngine.Object.FindAnyObjectByType<ShipLiftLever>();
+            shipBoardingRamp = UnityEngine.Object.FindAnyObjectByType<ShipBoardingRamp>();
 
             // Fresh scene: nobody is at the helm yet, and the local player isn't seated.
             currentPilotId = "";
@@ -463,7 +499,10 @@ namespace Skyship
             }
         }
 
-        /// <summary>Host-only: feed the current pilot's throttle/steer into the ship movement controller.</summary>
+        /// <summary>Host-only: feed the pilot's steering/lift and the telegraph's throttle into the
+        /// ship. The physical lever owns the throttle when it exists (the wheel only steers/lifts,
+        /// and the ship holds its set speed with nobody at the helm); W/S remain the fallback
+        /// throttle in scenes without a lever.</summary>
         private void DriveShipFromPilot()
         {
             if (shipMovement == null) return;
@@ -482,10 +521,81 @@ namespace Skyship
                 }
             }
 
-            shipMovement.inputEnabled = hasPilot;
+            var lever = Lever;
+            if (lever != null)
+                throttle = lever.CurrentThrottle;
+
+            // The spring-loaded lift lever owns climb/descend when it exists (the wheel's
+            // Space/Shift remain the fallback in scenes without one).
+            var liftLever = LiftLever;
+            if (liftLever != null)
+                lift = liftLever.CurrentLift;
+
+            shipMovement.inputEnabled = hasPilot
+                || (lever != null && Mathf.Abs(lever.CurrentThrottle) > 0.01f)
+                || (liftLever != null && Mathf.Abs(liftLever.CurrentLift) > 0.01f);
             shipMovement.SetThrottle(throttle);
             shipMovement.SetSteer(turn);
             shipMovement.SetLift(lift);
+        }
+
+        /// <summary>
+        /// Called by the lever when the local player clicks it into a new detent. The authority
+        /// applies it directly; a client applies optimistically and asks the host, whose State
+        /// packets are the authoritative stage for everyone.
+        /// </summary>
+        public void RequestThrottleStage(int stageIndex)
+        {
+            stageIndex = Mathf.Clamp(stageIndex, 0, 4);
+            if (Lever != null) Lever.ApplyStage(stageIndex);
+
+            if (!LocalAuthority && hostEndPoint != null)
+            {
+                SendPacketDirect(new NetworkPacket
+                {
+                    senderId = localPlayerId,
+                    packetType = "SetThrottle",
+                    throttleStage = stageIndex
+                }, hostEndPoint);
+            }
+        }
+
+        /// <summary>Lift-lever twin of RequestThrottleStage (3 stages, spring-returned by the lever).</summary>
+        public void RequestLiftStage(int stageIndex)
+        {
+            stageIndex = Mathf.Clamp(stageIndex, 0, 2);
+            if (LiftLever != null) LiftLever.ApplyStage(stageIndex);
+
+            if (!LocalAuthority && hostEndPoint != null)
+            {
+                SendPacketDirect(new NetworkPacket
+                {
+                    senderId = localPlayerId,
+                    packetType = "SetLift",
+                    liftStage = stageIndex
+                }, hostEndPoint);
+            }
+        }
+
+        /// <summary>
+        /// Called by the ramp button. The authority flips the deployed flag directly; a client
+        /// flips optimistically and asks the host, whose State packets are authoritative.
+        /// </summary>
+        public void RequestRampToggle()
+        {
+            if (Ramp == null) return;
+            bool target = !Ramp.DeployedTarget;
+            Ramp.SetDeployedTarget(target);
+
+            if (!LocalAuthority && hostEndPoint != null)
+            {
+                SendPacketDirect(new NetworkPacket
+                {
+                    senderId = localPlayerId,
+                    packetType = "SetRamp",
+                    rampDeployed = target ? 1 : 0
+                }, hostEndPoint);
+            }
         }
 
         /// <summary>
@@ -767,6 +877,9 @@ namespace Skyship
             {
                 statePacket.pilotId = currentPilotId;
                 statePacket.hubCountdown = hubCountdown; // relay the hub launch countdown to clients
+                if (Lever != null) statePacket.throttleStage = Lever.Stage;        // authoritative telegraph
+                if (LiftLever != null) statePacket.liftStage = LiftLever.Stage;    // authoritative lift lever
+                if (Ramp != null) statePacket.rampDeployed = Ramp.DeployedTarget ? 1 : 0;
 
                 // Sync ship positions & tilts
                 if (shipTransform != null)
@@ -971,6 +1084,26 @@ namespace Skyship
                 return;
             }
 
+            // Telegraph/lift/ramp requests are host-authoritative (clients ask; State confirms).
+            if (packet.packetType == "SetThrottle")
+            {
+                if (isHost && Lever != null)
+                    Lever.ApplyStage(Mathf.Clamp(packet.throttleStage, 0, 4));
+                return;
+            }
+            if (packet.packetType == "SetLift")
+            {
+                if (isHost && LiftLever != null)
+                    LiftLever.ApplyStage(Mathf.Clamp(packet.liftStage, 0, 2));
+                return;
+            }
+            if (packet.packetType == "SetRamp")
+            {
+                if (isHost && Ramp != null && packet.rampDeployed >= 0)
+                    Ramp.SetDeployedTarget(packet.rampDeployed == 1);
+                return;
+            }
+
             // Harvest requests are host-authoritative (clients ask, host validates + broadcasts).
             if (packet.packetType == "HarvestRequest")
             {
@@ -1071,6 +1204,14 @@ namespace Skyship
 
                 // Mirror the host's hub launch countdown so the client HUD can show it.
                 hubCountdown = packet.hubCountdown;
+
+                // Mirror the host's deck stations (visuals on this client).
+                if (packet.throttleStage >= 0 && Lever != null)
+                    Lever.ApplyRemoteStage(packet.throttleStage);
+                if (packet.liftStage >= 0 && LiftLever != null)
+                    LiftLever.ApplyRemoteStage(packet.liftStage);
+                if (packet.rampDeployed >= 0 && Ramp != null)
+                    Ramp.ApplyRemoteDeployed(packet.rampDeployed == 1);
             }
 
             // Sync other player positions & pickups

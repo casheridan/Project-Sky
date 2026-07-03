@@ -12,6 +12,9 @@ namespace Skyship
     /// This is a fully continuous, coordinate-weighted balance model where EVERY
     /// cargo box's physical coordinates on any deck surface contribute to balance.
     /// </summary>
+    // Anti-jitter execution chain (see ShipRider): tilt applies right after ship movement
+    // (-100) and before the deck-carry (-50) and player move (0).
+    [DefaultExecutionOrder(-90)]
     public class ShipBalanceController : MonoBehaviour
     {
         [Header("References")]
@@ -64,6 +67,14 @@ namespace Skyship
         public float turnPull;
         [Tooltip("0..1 strain from overload + imbalance, for warnings/FX.")]
         public float engineStrain;
+
+        // External tilt constraints from ship fixtures resting against the world (e.g. the
+        // boarding ramp grounded on terrain: the ground props the ship up instead of letting
+        // the tilt push the ramp through it). Owners re-assert these every frame while active
+        // and reset them to ±infinity when their contact ends. Sign convention: +Z roll = port
+        // (-X) down, so a grounded PORT ramp lowers externalRollMax.
+        [System.NonSerialized] public float externalRollMin = float.NegativeInfinity;
+        [System.NonSerialized] public float externalRollMax = float.PositiveInfinity;
 
         // Reused each frame to avoid allocations when gathering cargo held by aboard players.
         private readonly List<CargoItem> heldAboard = new List<CargoItem>();
@@ -173,6 +184,10 @@ namespace Skyship
             // Signs assume +X = right, +Z = forward.
             float targetRoll = -rollImbalance * maxRollAngle;  // heavy-right dips right
             float targetPitch = pitchImbalance * maxPitchAngle; // heavy-front dips nose down
+
+            // Fixtures braced against the world (grounded boarding ramp) cap how far the ship
+            // may lean toward them — the ground pushes back through the fixture.
+            targetRoll = Mathf.Clamp(targetRoll, externalRollMin, externalRollMax);
 
             Quaternion target = Quaternion.Euler(targetPitch, 0f, targetRoll);
             shipVisualRoot.localRotation = Quaternion.Slerp(

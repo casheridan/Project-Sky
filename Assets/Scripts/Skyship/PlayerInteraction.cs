@@ -44,15 +44,12 @@ namespace Skyship
 
             bool pickDropPressed = k != null && k.eKey.wasPressedThisFrame;
             bool dropClick = m != null && m.leftButton.wasPressedThisFrame;
-            bool chartViewPressed = k != null && k.fKey.wasPressedThisFrame;
+            bool stationPressed = k != null && k.fKey.wasPressedThisFrame;
 
-            // F aimed at the map table enters chart view (the table handles zoom/pan/exit while
-            // this component is suspended).
-            if (chartViewPressed && TryEnterChartView())
-                return;
-
-            // E aimed at the steering wheel takes/releases the helm instead of touching cargo.
-            if (pickDropPressed && TryToggleHelm())
+            // F aimed at a ship station engages it: wheel (toggle helm), levers (hold to work),
+            // ramp button (press), map table (chart view). Each station handles its own
+            // controls/exit from there. E stays purely for cargo and resource nodes.
+            if (stationPressed && TryUseStation())
                 return;
 
             if (heldItem == null)
@@ -105,26 +102,40 @@ namespace Skyship
                       $"{node.remainingYield}/{node.maxYield} left in node.");
         }
 
-        /// <summary>If the interaction ray hits the map table, enter chart view and return true.</summary>
-        private bool TryEnterChartView()
+        /// <summary>F dispatch: deck lever (hold to work), ramp button, wheel (toggle helm), or
+        /// map-table chart view — whichever the ray hits.</summary>
+        private bool TryUseStation()
         {
             if (!RaycastFromCamera(out RaycastHit hit)) return false;
+
+            var lever = hit.collider.GetComponentInParent<ShipDeckLever>();
+            if (lever != null)
+            {
+                lever.BeginGrab(gameObject); // held while F stays down; no-op if already grabbed
+                return true;
+            }
+
+            var rampButton = hit.collider.GetComponentInParent<ShipRampButton>();
+            if (rampButton != null)
+            {
+                rampButton.Press();
+                return true;
+            }
+
+            if (hit.collider.GetComponentInParent<ShipHelm>() != null)
+            {
+                if (NetworkManagerP2P.Instance != null)
+                    NetworkManagerP2P.Instance.ToggleLocalHelm();
+                return true;
+            }
+
             var table = hit.collider.GetComponentInParent<ShipMapTable>();
-            if (table == null) return false;
-
-            table.ToggleView(gameObject);
-            return true;
-        }
-
-        /// <summary>If the interaction ray hits a ShipHelm, request the helm and return true.</summary>
-        private bool TryToggleHelm()
-        {
-            if (!RaycastFromCamera(out RaycastHit hit)) return false;
-            if (hit.collider.GetComponentInParent<ShipHelm>() == null) return false;
-
-            if (NetworkManagerP2P.Instance != null)
-                NetworkManagerP2P.Instance.ToggleLocalHelm();
-            return true;
+            if (table != null)
+            {
+                table.ToggleView(gameObject);
+                return true;
+            }
+            return false;
         }
 
         private bool RaycastFromCamera(out RaycastHit hit)

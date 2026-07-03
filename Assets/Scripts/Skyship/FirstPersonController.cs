@@ -50,6 +50,7 @@ namespace Skyship
         public bool allowMovement = true;
 
         private CharacterController controller;
+        private ShipRider rider;
         private float verticalVelocity;
         private float pitch;
         private float coyoteTimer;
@@ -57,6 +58,7 @@ namespace Skyship
         private void Awake()
         {
             controller = GetComponent<CharacterController>();
+            rider = GetComponent<ShipRider>();
             if (cameraTransform == null && Camera.main != null)
                 cameraTransform = Camera.main.transform;
         }
@@ -123,6 +125,14 @@ namespace Skyship
             {
                 coyoteTimer -= Time.deltaTime;
                 verticalVelocity += gravity * Time.deltaTime;
+
+                // Riding a moving deck, single-frame isGrounded flickers happen (physics step
+                // timing vs the deck's per-frame motion). Inside the coyote window — i.e. we
+                // were grounded a moment ago and did NOT jump (jumping consumes the timer) —
+                // don't let gravity wind up, or it releases as a visible pop when grounding
+                // re-establishes. Real walk-offs get normal gravity after the window expires.
+                if (rider != null && rider.IsRiding && coyoteTimer > 0f)
+                    verticalVelocity = Mathf.Max(verticalVelocity, -1f);
             }
 
             if (enableJump && k != null && k.spaceKey.wasPressedThisFrame && coyoteTimer > 0f)

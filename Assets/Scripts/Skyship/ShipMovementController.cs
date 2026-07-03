@@ -14,6 +14,9 @@ namespace Skyship
     /// SetThrottle/SetSteer each frame. It is HOST-AUTHORITATIVE: on clients this component
     /// is disabled (the ship transform is network-synced) so only the host integrates motion.
     /// </summary>
+    // Anti-jitter execution chain (see ShipRider): ship movers run at negative order so the
+    // deck-carry (-50) and the player's own move (0) always see the deck's final pose.
+    [DefaultExecutionOrder(-100)]
     public class ShipMovementController : MonoBehaviour
     {
         [Header("References")]
