@@ -33,16 +33,16 @@ namespace Skyship
         [Header("Runtime (read-only)")]
         [SerializeField] protected int stage;
 
-        private Transform armPivot;
-        private Material knobMat;
+        protected Transform armPivot;
+        protected Material knobMat;
 
-        // Local grab state.
+        // Local grab state (protected so analog subclasses can drive their own feel).
         private bool grabbed;
         private GameObject grabber;
         private FirstPersonController grabberController;
         private Transform grabberCamera;
         private float savedSensitivity;
-        private float accum;
+        protected float accum;
 
         public int Stage => stage;
         public bool IsGrabbed => grabbed;
@@ -147,7 +147,11 @@ namespace Skyship
             if (SpringStage >= 0 && stage != SpringStage)
                 RequestStage(SpringStage); // spring-loaded levers snap home when let go
             UpdateVisual(0f);
+            OnReleased();
         }
+
+        /// <summary>Hook for subclasses (e.g. the analog throttle pushes its final value).</summary>
+        protected virtual void OnReleased() { }
 
         protected virtual void Update()
         {
@@ -169,13 +173,13 @@ namespace Skyship
                 return;
             }
 
+            // Which way is "toward the bow" on this player's screen right now? Project the
+            // lever's forward axis into camera space: moving the view along that direction
+            // shoves the lever forward, against it pulls back. Works standing on either side.
+            float travel = 0f;
             var m = Mouse.current;
             if (m != null && grabberCamera != null)
             {
-                // Which way is "toward the bow" on this player's screen right now? Project the
-                // lever's forward axis into camera space: moving the view along that direction
-                // shoves the lever forward (stage up), against it pulls back (stage down). Works
-                // standing on either side of the stick.
                 Vector3 bow = transform.forward;
                 Vector2 screenBow = new Vector2(
                     Vector3.Dot(bow, grabberCamera.right),
@@ -184,22 +188,33 @@ namespace Skyship
                 if (screenBow.sqrMagnitude > 0.04f) // ambiguous while sighting straight down the axis
                 {
                     screenBow.Normalize();
-                    accum += Vector2.Dot(m.delta.ReadValue(), screenBow);
+                    travel = Vector2.Dot(m.delta.ReadValue(), screenBow);
                 }
-
-                if (accum > detentThreshold && stage < Detents.Length - 1)
-                {
-                    RequestStage(stage + 1);
-                    accum = 0f;
-                }
-                else if (accum < -detentThreshold && stage > 0)
-                {
-                    RequestStage(stage - 1);
-                    accum = 0f;
-                }
-                // At the end stops the lever just leans against the stop.
-                accum = Mathf.Clamp(accum, -detentThreshold, detentThreshold);
             }
+            OnGrabTravel(travel);
+        }
+
+        /// <summary>
+        /// Integrate this frame's view travel (screen px toward the bow). Default: the classic
+        /// detent lever — accumulate and CLICK a stage per threshold. The analog throttle
+        /// overrides this with continuous behavior.
+        /// </summary>
+        protected virtual void OnGrabTravel(float travel)
+        {
+            accum += travel;
+
+            if (accum > detentThreshold && stage < Detents.Length - 1)
+            {
+                RequestStage(stage + 1);
+                accum = 0f;
+            }
+            else if (accum < -detentThreshold && stage > 0)
+            {
+                RequestStage(stage - 1);
+                accum = 0f;
+            }
+            // At the end stops the lever just leans against the stop.
+            accum = Mathf.Clamp(accum, -detentThreshold, detentThreshold);
 
             UpdateVisual(Mathf.Clamp(accum / detentThreshold, -1f, 1f) * detentWiggle);
         }
@@ -228,10 +243,16 @@ namespace Skyship
             ApplyStage(remoteStage);
         }
 
-        private void UpdateVisual(float wiggleDegrees)
+        protected virtual void UpdateVisual(float wiggleDegrees)
+        {
+            SetArmAngle(Detents[stage] + wiggleDegrees);
+        }
+
+        /// <summary>Pose the arm at the given fore/aft angle (degrees; forward lean = positive).</summary>
+        protected void SetArmAngle(float degrees)
         {
             if (armPivot == null) return;
-            armPivot.localRotation = Quaternion.Euler(Detents[stage] + wiggleDegrees, 0f, 0f);
+            armPivot.localRotation = Quaternion.Euler(degrees, 0f, 0f);
         }
 
         protected static Material MakeMat(Color color)

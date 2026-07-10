@@ -41,6 +41,7 @@ namespace Skyship
         private IReadOnlyList<MapStructureInfo> structures;
         private Transform markerRoot;
         private Transform shipMarker;
+        private Transform stormMarker;
         private Transform shipRoot;
         private float worldToBoard;
 
@@ -167,6 +168,20 @@ namespace Skyship
             nose.GetComponent<Renderer>().sharedMaterial = mat;
 
             shipMarker = shipGo.transform;
+
+            // Live storm marker: a flat dark disc that tracks the traveling storm cell, so the
+            // crew can plot a course around its path. Hidden while no cell is on the map.
+            var stormGo = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+            stormGo.name = "StormMarker";
+            Destroy(stormGo.GetComponent<Collider>());
+            stormGo.transform.SetParent(markerRoot, false);
+            var stormMat = MakeMat(new Color(0.45f, 0.14f, 0.50f));
+            stormMat.EnableKeyword("_EMISSION");
+            if (stormMat.HasProperty("_EmissionColor"))
+                stormMat.SetColor("_EmissionColor", new Color(0.55f, 0.12f, 0.70f));
+            stormGo.GetComponent<Renderer>().sharedMaterial = stormMat;
+            stormGo.SetActive(false);
+            stormMarker = stormGo.transform;
         }
 
         private void BuildMarker(MapStructureInfo s)
@@ -196,6 +211,7 @@ namespace Skyship
                 case MapStructureKind.IslandLarge: return new Color(0.30f, 0.60f, 0.28f);
                 case MapStructureKind.IslandMedium: return new Color(0.45f, 0.70f, 0.38f);
                 case MapStructureKind.IslandSmall: return new Color(0.62f, 0.78f, 0.52f);
+                case MapStructureKind.Objective: return new Color(0.85f, 0.15f, 0.12f); // mission site: red
                 default: return new Color(0.45f, 0.32f, 0.20f); // derelict
             }
         }
@@ -215,6 +231,42 @@ namespace Skyship
                 shipMarker.localPosition = WorldToBoard(shipRoot.position);
                 // Show heading: spin the marker to the ship's yaw (board-local, so deck tilt is inherited).
                 shipMarker.localRotation = Quaternion.Euler(0f, shipRoot.eulerAngles.y, 0f);
+
+                // Inside a whisper fog bank the chart lies: the ship arrow wanders and spins wrong.
+                float distortion = WhisperFogSystem.LocalDistortion;
+                if (distortion > 0.25f)
+                {
+                    float t = Time.time * 3f;
+                    shipMarker.localPosition += new Vector3(
+                        (Mathf.PerlinNoise(t, 1.3f) - 0.5f),
+                        0f,
+                        (Mathf.PerlinNoise(t, 8.7f) - 0.5f)) * (boardWidth * 0.25f * distortion);
+                    shipMarker.localRotation = Quaternion.Euler(0f, Time.time * 160f * distortion, 0f);
+                }
+            }
+
+            // Track the traveling storm cell (synced host state) at true chart scale.
+            if (stormMarker != null)
+            {
+                var manager = ExpeditionManager.Instance;
+                bool show = manager != null && manager.runtime.stormActive;
+                if (stormMarker.gameObject.activeSelf != show)
+                    stormMarker.gameObject.SetActive(show);
+                if (show)
+                {
+                    // Clamp onto the board: a cell entering from outside the map pins at the edge
+                    // so the crew still sees which side the weather is coming from.
+                    Vector3 p = WorldToBoard(manager.runtime.stormCenter);
+                    float half = boardWidth * 0.5f;
+                    p.x = Mathf.Clamp(p.x, -half, half);
+                    p.z = Mathf.Clamp(p.z, -half, half);
+                    stormMarker.localPosition = p + new Vector3(0f, 0.004f, 0f);
+
+                    // True footprint at chart scale, with a slow menace-pulse so it reads at a glance.
+                    float pulse = 1f + 0.06f * Mathf.Sin(Time.time * 2.5f);
+                    float d = Mathf.Max(manager.runtime.stormRadius * 2f * worldToBoard, 0.05f) * pulse;
+                    stormMarker.localScale = new Vector3(d, 0.0015f, d);
+                }
             }
 
             if (viewing) HandleViewInput();

@@ -76,6 +76,27 @@ namespace Skyship
         [System.NonSerialized] public float externalRollMin = float.NegativeInfinity;
         [System.NonSerialized] public float externalRollMax = float.PositiveInfinity;
 
+        // Storm rocking written by StormSystem (host only): additive roll/pitch degrees layered on
+        // top of the cargo-driven tilt target. Clients see it through the synced visualTilt.
+        [System.NonSerialized] public float externalRollAdd = 0f;
+        [System.NonSerialized] public float externalPitchAdd = 0f;
+
+        /// <summary>Phantom weight stuck to the hull (e.g. barnacles): counts toward load and
+        /// torque exactly like a crate at that ShipVisualRoot-local position. Owned/rebuilt by
+        /// BarnacleSystem on the authority each frame.</summary>
+        public struct ExternalWeight { public Vector3 localPos; public float weight; }
+        [System.NonSerialized] public List<ExternalWeight> externalWeights = new List<ExternalWeight>();
+
+        // One-shot tilt jolts (e.g. a leviathan breach slamming the deck): decay back to zero.
+        private float joltRoll, joltPitch;
+
+        /// <summary>Kick the deck: an impulse (degrees) layered on the tilt target that decays away.</summary>
+        public void AddTiltImpulse(float roll, float pitch)
+        {
+            joltRoll += roll;
+            joltPitch += pitch;
+        }
+
         // Reused each frame to avoid allocations when gathering cargo held by aboard players.
         private readonly List<CargoItem> heldAboard = new List<CargoItem>();
 
@@ -161,6 +182,18 @@ namespace Skyship
                 }
             }
 
+            // Phantom hull weights (barnacles): same continuous torque math as deck cargo.
+            for (int i = 0; i < externalWeights.Count; i++)
+            {
+                float w = externalWeights[i].weight;
+                Vector3 lp = externalWeights[i].localPos;
+                totalWeight += w;
+                rollTorque += w * lp.x;
+                pitchTorque += w * lp.z;
+                if (lp.x < -0.1f) leftWeight += w; else if (lp.x > 0.1f) rightWeight += w;
+                if (lp.z > 0.1f) frontWeight += w; else if (lp.z < -0.1f) rearWeight += w;
+            }
+
             loadPercent = maxCapacity > 0.01f ? totalWeight / maxCapacity : 0f;
 
             // Normalized -1..1 imbalances.
@@ -182,8 +215,12 @@ namespace Skyship
 
             // Roll about Z from left/right weight, pitch about X from front/rear.
             // Signs assume +X = right, +Z = forward.
-            float targetRoll = -rollImbalance * maxRollAngle;  // heavy-right dips right
-            float targetPitch = pitchImbalance * maxPitchAngle; // heavy-front dips nose down
+            // Decaying one-shot jolts (breaches etc.) on top of the steady external adds.
+            joltRoll = Mathf.MoveTowards(joltRoll, 0f, 12f * Time.deltaTime);
+            joltPitch = Mathf.MoveTowards(joltPitch, 0f, 12f * Time.deltaTime);
+
+            float targetRoll = -rollImbalance * maxRollAngle + externalRollAdd + joltRoll;    // heavy-right dips right
+            float targetPitch = pitchImbalance * maxPitchAngle + externalPitchAdd + joltPitch; // heavy-front dips nose down
 
             // Fixtures braced against the world (grounded boarding ramp) cap how far the ship
             // may lean toward them — the ground pushes back through the fixture.

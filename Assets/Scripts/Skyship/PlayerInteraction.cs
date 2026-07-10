@@ -54,9 +54,8 @@ namespace Skyship
 
             if (heldItem == null)
             {
-                // Harvest takes priority over pickup: aiming at a resource node breaks a crate off
-                // it; otherwise fall through to normal cargo pickup.
-                if (pickDropPressed && !TryHarvestNode())
+                // E priority: resource node harvest, then hull-barnacle scrape, then cargo pickup.
+                if (pickDropPressed && !TryHarvestNode() && !TryScrapeBarnacle())
                     TryPickUp();
             }
             else
@@ -102,6 +101,17 @@ namespace Skyship
                       $"{node.remainingYield}/{node.maxYield} left in node.");
         }
 
+        /// <summary>If the interaction ray hits a hull barnacle, scrape it (host-validated via
+        /// BarnacleSystem) and return true.</summary>
+        private bool TryScrapeBarnacle()
+        {
+            if (!RaycastFromCamera(out RaycastHit hit)) return false;
+            var barnacle = hit.collider.GetComponentInParent<Barnacle>();
+            if (barnacle == null) return false;
+            BarnacleSystem.RequestScrape(barnacle.id);
+            return true;
+        }
+
         /// <summary>F dispatch: deck lever (hold to work), ramp button, wheel (toggle helm), or
         /// map-table chart view — whichever the ray hits.</summary>
         private bool TryUseStation()
@@ -135,6 +145,22 @@ namespace Skyship
                 table.ToggleView(gameObject);
                 return true;
             }
+
+            // Hub Sky Chart (expedition selection UI).
+            var chart = hit.collider.GetComponentInParent<SkyChartTable>();
+            if (chart != null)
+            {
+                chart.ToggleView(gameObject);
+                return true;
+            }
+
+            // Return-to-Port bell on deck (host-validated via ExpeditionManager).
+            var returnStation = hit.collider.GetComponentInParent<ShipReturnStation>();
+            if (returnStation != null)
+            {
+                returnStation.Press();
+                return true;
+            }
             return false;
         }
 
@@ -152,6 +178,11 @@ namespace Skyship
 
             CargoItem item = hit.collider.GetComponentInParent<CargoItem>();
             if (item == null) return;
+
+            // Light host-arbitration: an item already flagged held (locally or by a remote player
+            // via the sync) can't be double-picked. Pickup itself stays optimistic-local for feel;
+            // the host's heldCargoName sync remains the source of truth for conflicts.
+            if (item.isHeld) return;
 
             item.OnPickedUp(holdPoint);
             heldItem = item;

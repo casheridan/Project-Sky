@@ -56,6 +56,7 @@ namespace Skyship
             public Vector3 position;
             public Quaternion rotation;
             public int category; // CargoCategory as int — lets clients spawn crates they missed (harvest drops)
+            public string defId; // CargoDefinition id ("" for legacy cubes) — preserves expedition fields on self-heal spawns
         }
 
         [System.Serializable]
@@ -77,15 +78,22 @@ namespace Skyship
         public class NetworkPacket
         {
             public string senderId;
-            public string packetType; // "Handshake", "Welcome", "Disconnect", "StartGame", "State", "ClaimHelm", "ReleaseHelm", "HarvestRequest", "HarvestResult"
+            public string packetType; // "Handshake", "Welcome", "Disconnect", "StartGame", "State", "ClaimHelm", "ReleaseHelm", "HarvestRequest", "HarvestResult", "ReturnRequest", "ReturnToPort", "ExpeditionEvent"
             public int spawnSlot; // host->client: assigned spawn index (Welcome packet)
             public int worldSeed; // host->clients (StartGame): seed for deterministic world generation
+
+            // Expedition loop (see ExpeditionManager). The sync blob keeps the packet schema
+            // stable: new expedition fields only ever touch ExpeditionNetState.
+            public string expeditionId;   // host->clients (StartGame): expedition being launched
+            public string expeditionJson; // host->clients: ExpeditionNetState in State packets; ExpeditionResults in ReturnToPort
+            public string eventMessage;   // host->clients (ExpeditionEvent): banner text
+            public string scrapeId;       // client->host (ScrapeRequest): barnacle to remove
             public string pilotId; // host->clients (State): id of the player currently at the helm ("" = nobody)
             public float hubCountdown = -1f; // host->clients (State): seconds left on the hub launch countdown (-1 = not counting)
 
             // Engine telegraph (client->host "SetThrottle" request; host->clients in State).
-            // -1 = not included (client State packets never carry a stage).
-            public int throttleStage = -1;
+            // ANALOG float (-1..1); the -999 sentinel means "not included".
+            public float throttleValue = -999f;
 
             // Lift lever (client->host "SetLift" request; host->clients in State). -1 = not included.
             public int liftStage = -1;
@@ -215,6 +223,9 @@ namespace Skyship
         // Host-side: last-known "standing on the ship deck" flag for each connected client (by id).
         private readonly Dictionary<string, bool> playerAboard = new Dictionary<string, bool>();
 
+        // Last-known held cargo per remote player (from their State packets) — debug HUD.
+        private readonly Dictionary<string, string> playerHeldCargo = new Dictionary<string, string>();
+
         // Remote representations in our local scene
         private Dictionary<string, GameObject> remotePuppets = new Dictionary<string, GameObject>();
         private Dictionary<string, CargoItem> localCargoItems = new Dictionary<string, CargoItem>();
@@ -272,6 +283,7 @@ namespace Skyship
         private void TeleportLocalPlayer(Vector3 worldPos)
         {
             if (localPlayer == null) return;
+            Debug.Log($"[NetworkManager] Teleporting local player {localPlayer.transform.position} -> {worldPos}.");
             // A CharacterController resists direct transform writes; toggle it around the move.
             var cc = localPlayer.GetComponent<CharacterController>();
             if (cc != null) cc.enabled = false;
@@ -360,6 +372,7 @@ namespace Skyship
             // Fresh scene: no hub launch is in progress and no aboard flags carry over.
             hubCountdown = -1f;
             playerAboard.Clear();
+            playerHeldCargo.Clear();
 
             // Cache cargo items / resource nodes by name for fast lookup
             worldGenerator = UnityEngine.Object.FindAnyObjectByType<WorldGenerator>();
@@ -465,7 +478,7 @@ namespace Skyship
         /// peer: the authority from HandleHarvest, clients from HarvestResult packets or the
         /// unknown-cargo self-heal in the State sync.
         /// </summary>
-        private CargoItem SpawnHarvestCrate(string crateName, CargoCategory category, Vector3 pos)
+        private CargoItem SpawnHarvestCrate(string crateName, CargoCategory category, Vector3 pos, string defId = "")
         {
             if (localCargoItems.TryGetValue(crateName, out CargoItem existing) && existing != null)
                 return existing;
@@ -474,7 +487,12 @@ namespace Skyship
                 worldGenerator = UnityEngine.Object.FindAnyObjectByType<WorldGenerator>();
             if (worldGenerator == null) return null; // not in a generated world (e.g. still in the hub)
 
-            CargoItem item = worldGenerator.SpawnCargoNamed(crateName, category, pos);
+            // A definition id (expedition cargo) preserves the objective/corruption fields on
+            // self-heal spawns; legacy crates keep the category path.
+            CargoDefinition def = string.IsNullOrEmpty(defId) ? null : CargoDatabase.Get(defId);
+            CargoItem item = def != null
+                ? worldGenerator.SpawnDefinedCargoNamed(crateName, def, pos)
+                : worldGenerator.SpawnCargoNamed(crateName, category, pos);
             localCargoItems[item.name] = item;
             return item;
         }
@@ -587,14 +605,14 @@ namespace Skyship
         }
 
         /// <summary>
-        /// Called by the lever when the local player clicks it into a new detent. The authority
-        /// applies it directly; a client applies optimistically and asks the host, whose State
-        /// packets are the authoritative stage for everyone.
+        /// Called by the analog telegraph while the local player drags it (rate-limited by the
+        /// lever). The authority applies it directly; a client applies optimistically and asks
+        /// the host, whose State packets carry the authoritative value for everyone.
         /// </summary>
-        public void RequestThrottleStage(int stageIndex)
+        public void RequestThrottleValue(float value)
         {
-            stageIndex = Mathf.Clamp(stageIndex, 0, 4);
-            if (Lever != null) Lever.ApplyStage(stageIndex);
+            value = Mathf.Clamp(value, -1f, 1f);
+            if (Lever != null) Lever.ApplyValue(value);
 
             if (!LocalAuthority && hostEndPoint != null)
             {
@@ -602,12 +620,12 @@ namespace Skyship
                 {
                     senderId = localPlayerId,
                     packetType = "SetThrottle",
-                    throttleStage = stageIndex
+                    throttleValue = value
                 }, hostEndPoint);
             }
         }
 
-        /// <summary>Lift-lever twin of RequestThrottleStage (3 stages, spring-returned by the lever).</summary>
+        /// <summary>Lift-lever stage request (3 detents, spring-returned by the lever).</summary>
         public void RequestLiftStage(int stageIndex)
         {
             stageIndex = Mathf.Clamp(stageIndex, 0, 2);
@@ -923,8 +941,12 @@ namespace Skyship
             if (isHost)
             {
                 statePacket.pilotId = currentPilotId;
+
+                // Expedition + shared-progress sync blob (objective state, threat, resources...).
+                if (ExpeditionManager.Instance != null)
+                    statePacket.expeditionJson = ExpeditionManager.Instance.SerializeNetState();
                 statePacket.hubCountdown = hubCountdown; // relay the hub launch countdown to clients
-                if (Lever != null) statePacket.throttleStage = Lever.Stage;        // authoritative telegraph
+                if (Lever != null) statePacket.throttleValue = Lever.CurrentThrottle; // authoritative telegraph (analog)
                 if (LiftLever != null) statePacket.liftStage = LiftLever.Stage;    // authoritative lift lever
                 if (Ramp != null) statePacket.rampDeployed = Ramp.DeployedTarget ? 1 : 0;
 
@@ -951,7 +973,8 @@ namespace Skyship
                             name = item.name,
                             position = item.transform.position,
                             rotation = item.transform.rotation,
-                            category = (int)item.category
+                            category = (int)item.category,
+                            defId = item.definitionId
                         });
                     }
                 }
@@ -1003,11 +1026,74 @@ namespace Skyship
                 {
                     senderId = sceneName, // use senderId to pass the scene name
                     packetType = "StartGame",
-                    worldSeed = worldSeed
+                    worldSeed = worldSeed,
+                    // Clients adopt the expedition BEFORE loading, so their WorldGenerator builds
+                    // the same mission space from the same request.
+                    expeditionId = ExpeditionManager.Instance != null
+                        ? ExpeditionManager.Instance.runtime.selectedExpeditionId : ""
                 };
                 BroadcastPacket(startPacket);
             }
         }
+
+        // ==========================================
+        // EXPEDITION LOOP (host-authoritative; see ExpeditionManager)
+        // ==========================================
+
+        /// <summary>Client: ask the host to return the crew to port (rang the deck bell).</summary>
+        public void SendReturnRequest()
+        {
+            if (LocalAuthority || hostEndPoint == null) return;
+            SendPacketDirect(new NetworkPacket
+            {
+                senderId = localPlayerId,
+                packetType = "ReturnRequest"
+            }, hostEndPoint);
+        }
+
+        /// <summary>Client: ask the host to scrape a hull barnacle (pressed E on it).</summary>
+        public void SendScrapeRequest(string barnacleId)
+        {
+            if (LocalAuthority || hostEndPoint == null || string.IsNullOrEmpty(barnacleId)) return;
+            SendPacketDirect(new NetworkPacket
+            {
+                senderId = localPlayerId,
+                packetType = "ScrapeRequest",
+                scrapeId = barnacleId
+            }, hostEndPoint);
+        }
+
+        /// <summary>Host/solo: show an expedition event banner locally AND on every client.</summary>
+        public void BroadcastExpeditionEvent(string message)
+        {
+            ShowBanner(message, 5f);
+            Debug.Log("[ExpeditionEvent] " + message);
+            if (isHost && isConnected)
+            {
+                BroadcastPacket(new NetworkPacket
+                {
+                    senderId = localPlayerId,
+                    packetType = "ExpeditionEvent",
+                    eventMessage = message
+                });
+            }
+        }
+
+        /// <summary>Host: send the expedition results and the "come home" order to every client
+        /// (each client loads the hub itself on receipt — see ExpeditionManager.ClientApplyReturn).</summary>
+        public void BroadcastReturnToPort(string resultsJson)
+        {
+            if (!isHost || !isConnected) return;
+            BroadcastPacket(new NetworkPacket
+            {
+                senderId = localPlayerId,
+                packetType = "ReturnToPort",
+                expeditionJson = resultsJson
+            });
+        }
+
+        /// <summary>Last-known held cargo per remote player id (debug HUD).</summary>
+        public IReadOnlyDictionary<string, string> GetHeldCargoByPlayer() => playerHeldCargo;
 
         // ==========================================
         // PLAYER HUB → WORLD LAUNCH
@@ -1117,6 +1203,7 @@ namespace Skyship
                     // A client left: drop it from the roster and remove its puppet.
                     connectedPlayerIds.Remove(packet.senderId);
                     playerAboard.Remove(packet.senderId);
+                    playerHeldCargo.Remove(packet.senderId);
                     DestroyPuppet(packet.senderId);
                     // If they were piloting, free the helm.
                     if (currentPilotId == packet.senderId)
@@ -1134,8 +1221,8 @@ namespace Skyship
             // Telegraph/lift/ramp requests are host-authoritative (clients ask; State confirms).
             if (packet.packetType == "SetThrottle")
             {
-                if (isHost && Lever != null)
-                    Lever.ApplyStage(Mathf.Clamp(packet.throttleStage, 0, 4));
+                if (isHost && Lever != null && packet.throttleValue > -900f)
+                    Lever.ApplyValue(packet.throttleValue);
                 return;
             }
             if (packet.packetType == "SetLift")
@@ -1174,6 +1261,38 @@ namespace Skyship
                 return;
             }
 
+            // Barnacle scrapes are host-authoritative (a client pressed E on a hull growth).
+            if (packet.packetType == "ScrapeRequest")
+            {
+                if (isHost && BarnacleSystem.Instance != null)
+                    BarnacleSystem.Instance.HostScrape(packet.scrapeId);
+                return;
+            }
+
+            // Return-to-port requests are host-authoritative (a client rang the bell; validate + execute).
+            if (packet.packetType == "ReturnRequest")
+            {
+                if (isHost && ExpeditionManager.Instance != null)
+                    ExpeditionManager.Instance.HostExecuteReturn();
+                return;
+            }
+
+            // The host is bringing everyone back to the hub with the expedition results.
+            if (packet.packetType == "ReturnToPort")
+            {
+                if (!isHost && ExpeditionManager.Instance != null)
+                    ExpeditionManager.Instance.ClientApplyReturn(packet.expeditionJson);
+                return;
+            }
+
+            // A synchronized expedition event (threat beats etc.): show the banner locally.
+            if (packet.packetType == "ExpeditionEvent")
+            {
+                if (!isHost && !string.IsNullOrEmpty(packet.eventMessage))
+                    ShowBanner(packet.eventMessage, 5f);
+                return;
+            }
+
             // Helm claim/release requests are host-authoritative (clients ask, host decides).
             if (packet.packetType == "ClaimHelm")
             {
@@ -1190,15 +1309,13 @@ namespace Skyship
 
             if (packet.packetType == "Welcome")
             {
-                // Host assigned us a spawn slot. Store it (and apply now if we're already in-game).
+                // Host assigned us a spawn slot. Store it — it's applied at the NEXT scene load
+                // (OnSceneLoaded offsets from the authored spawn). Do NOT teleport mid-scene: a
+                // re-Welcome can arrive during normal play (host re-hosted, or our first packets
+                // raced the handshake), and the old hardcoded (0, y, 0) jump dumped players into
+                // empty sky at whatever altitude they happened to be at.
                 spawnIndex = packet.spawnSlot;
-                Debug.Log($"[NetworkClient] Host assigned spawn slot {spawnIndex}.");
-                if (localPlayer != null && SceneManager.GetActiveScene().name != "MainMenuScene")
-                {
-                    int slot = Mathf.Clamp(spawnIndex, 0, SpawnOffsets.Length - 1);
-                    // Re-place relative to the authored spawn origin (slot 0 offset is the origin).
-                    TeleportLocalPlayer(new Vector3(0f, localPlayer.transform.position.y, 0f) + SpawnOffsets[slot]);
-                }
+                Debug.Log($"[NetworkClient] Host assigned spawn slot {spawnIndex} (applied on next scene load).");
                 return;
             }
 
@@ -1214,6 +1331,9 @@ namespace Skyship
                 Debug.Log("[NetworkClient] Received StartGame notice from Host. Loading gameplay scene...");
                 // Adopt the host's world seed BEFORE loading so our WorldGenerator builds the same world.
                 worldSeed = packet.worldSeed;
+                // Adopt the host's expedition too — the generator's mission request depends on it.
+                if (ExpeditionManager.Instance != null && !string.IsNullOrEmpty(packet.expeditionId))
+                    ExpeditionManager.Instance.OnRemoteExpeditionStart(packet.expeditionId, packet.worldSeed);
                 // The host sends the scene name in the senderId field (or defaults to MainGameScene)
                 string sceneName = string.IsNullOrEmpty(packet.senderId) ? "MainGameScene" : packet.senderId;
                 UnityEngine.SceneManagement.SceneManager.LoadScene(sceneName);
@@ -1252,9 +1372,13 @@ namespace Skyship
                 // Mirror the host's hub launch countdown so the client HUD can show it.
                 hubCountdown = packet.hubCountdown;
 
+                // Mirror the host's expedition + shared-progress state (objective, threat, resources).
+                if (ExpeditionManager.Instance != null)
+                    ExpeditionManager.Instance.ApplyNetState(packet.expeditionJson);
+
                 // Mirror the host's deck stations (visuals on this client).
-                if (packet.throttleStage >= 0 && Lever != null)
-                    Lever.ApplyRemoteStage(packet.throttleStage);
+                if (packet.throttleValue > -900f && Lever != null)
+                    Lever.ApplyRemoteValue(packet.throttleValue);
                 if (packet.liftStage >= 0 && LiftLever != null)
                     LiftLever.ApplyRemoteStage(packet.liftStage);
                 if (packet.rampDeployed >= 0 && Ramp != null)
@@ -1277,6 +1401,9 @@ namespace Skyship
                 // Host: track whether each client is standing on the ship deck (for the hub launch).
                 if (isHost)
                     playerAboard[pData.id] = pData.onShip;
+
+                // Remember who is holding what (debug HUD).
+                playerHeldCargo[pData.id] = pData.heldCargoName;
 
                 GameObject puppet = GetOrCreatePuppet(pData.id);
 
@@ -1338,7 +1465,7 @@ namespace Skyship
                     {
                         // Unknown crate: we missed its HarvestResult packet. Spawn it from the
                         // State data so the world converges (idempotent by name).
-                        SpawnHarvestCrate(cData.name, (CargoCategory)cData.category, cData.position);
+                        SpawnHarvestCrate(cData.name, (CargoCategory)cData.category, cData.position, cData.defId);
                     }
                 }
 

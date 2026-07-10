@@ -73,6 +73,16 @@ namespace Skyship
         [Tooltip("Current vertical speed of the ship (meters per second, + = climbing).")]
         public float currentClimbSpeed = 0f;
 
+        // Consequence hooks written by ShipStressSystem each frame (host only — this component
+        // is disabled on clients). Multiplies max speed/turn/climb; sink drags the ship down.
+        [System.NonSerialized] public float externalHandlingMultiplier = 1f;
+        [System.NonSerialized] public float externalSinkRate = 0f;
+
+        // Storm hooks written by StormSystem (host only): world-space gust drift (m/s) and a slow
+        // yaw shove (deg/s) that push the ship off course until the pilot corrects.
+        [System.NonSerialized] public Vector3 externalWindDrift = Vector3.zero;
+        [System.NonSerialized] public float externalYawDrift = 0f;
+
         private float throttleInput; // -1..1, set externally via SetThrottle
         private float steerInput;    // -1..1, set externally via SetSteer
         private float liftInput;     // -1..1, set externally via SetLift (+ = climb)
@@ -101,6 +111,7 @@ namespace Skyship
         {
             float speedMult = balance != null ? balance.speedMultiplier : 1f;
             float turnPull = balance != null ? balance.turnPull : 0f;
+            speedMult *= Mathf.Clamp(externalHandlingMultiplier, 0.1f, 1f);
 
             // ----------------------------------------------------
             // 1. TRANSLATIONAL MOMENTUM (FORWARD / BACKWARD)
@@ -170,6 +181,17 @@ namespace Skyship
             // Climb/descend (stopping at / bouncing off terrain above/below).
             if (!MoveWithCollision(Vector3.up * (currentClimbSpeed * Time.deltaTime)))
                 currentClimbSpeed = -currentClimbSpeed * bounceFactor;
+
+            // Critical overload past its grace timer drags the ship down until weight is shed
+            // (ShipStressSystem sets the rate). Ignored when the descent is already blocked.
+            if (externalSinkRate > 0.001f)
+                MoveWithCollision(Vector3.down * (externalSinkRate * Time.deltaTime));
+
+            // Storm gusts (StormSystem): drift the hull and lean on the rudder.
+            if (externalWindDrift.sqrMagnitude > 1e-6f)
+                MoveWithCollision(externalWindDrift * Time.deltaTime);
+            if (Mathf.Abs(externalYawDrift) > 0.001f)
+                transform.Rotate(Vector3.up, externalYawDrift * Time.deltaTime, Space.World);
 
             // Final safety net: if any motion (especially a yaw) left the hull inside terrain, push it
             // back out. This is what actually stops "turn into a wall and clip through".

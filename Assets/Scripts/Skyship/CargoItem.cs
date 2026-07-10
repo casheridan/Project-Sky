@@ -39,8 +39,18 @@ namespace Skyship
         [Tooltip("Weight in arbitrary units. Drives ship balance & load.")]
         public float weight = 10f;
 
-        [Tooltip("Salvage value. Not used by the balance sim yet.")]
+        [Tooltip("Salvage value. Converted to money/scrap/fuel by the return-to-port tally.")]
         public float value = 50f;
+
+        [Header("Expedition (stamped from a CargoDefinition; empty for legacy prototype cubes)")]
+        [Tooltip("CargoDatabase id this item was spawned from. Objective tracking matches on this.")]
+        public string definitionId = "";
+        [Tooltip("Mission-critical cargo (e.g. the Black Navigation Box).")]
+        public bool isObjectiveItem;
+        [Tooltip("Eldritch corruption carried aboard — feeds the threat director.")]
+        public float corruptionValue;
+        [Tooltip("Extra ship strain beyond raw weight (future stability sim).")]
+        public float stabilityImpact;
 
         [Header("Runtime state (read-only)")]
         public bool isHeld;

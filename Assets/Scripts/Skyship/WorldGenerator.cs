@@ -11,7 +11,9 @@ namespace Skyship
         IslandLarge,
         IslandMedium,
         IslandSmall,
-        Derelict
+        Derelict,
+        // Appended so existing serialized values keep their meaning.
+        Objective
     }
 
     /// <summary>One placed structure, recorded for the ship's map-table diorama.</summary>
@@ -103,6 +105,20 @@ namespace Skyship
         public float fogEndDistance = 6000f;
         public Color fogColor = new Color(0.65f, 0.72f, 0.82f);
 
+        [Header("Sky (procedural skybox, applied at runtime)")]
+        public Color skyTint = new Color(0.42f, 0.55f, 0.75f);
+        [Tooltip("Skybox 'ground' color — reads as the haze below the cloud layer.")]
+        public Color skyGroundColor = new Color(0.55f, 0.58f, 0.63f);
+        public float skyExposure = 1.25f;
+        public float atmosphereThickness = 0.85f;
+
+        [Header("Cloud Sea (the deck of clouds far below the islands)")]
+        [Tooltip("How far below the bottom of the world volume the cloud layer sits.")]
+        public float cloudSeaDepthBelow = 200f;
+        [Tooltip("Flattened cloud puffs scattered across the layer.")]
+        public int cloudPuffCount = 150;
+        public Color cloudColor = new Color(0.90f, 0.92f, 0.96f);
+
         [Header("Runtime (read-only)")]
         [SerializeField] private int usedSeed;
         [SerializeField] private int spawnedIslands;
@@ -114,6 +130,11 @@ namespace Skyship
         private System.Random rng;
         private int cargoCounter;
         private int nodeCounter;
+
+        // MISSION GENERATION: when an expedition is active, ExpeditionManager supplies this
+        // request (built identically on every peer from the synced expedition id + world seed),
+        // and generation adds a guaranteed objective site + mission cargo. Null = legacy free-roam.
+        private ExpeditionGenerationRequest missionRequest;
         private int terrainLayer = -1; // structures go on this layer so the ship's hull collides with them
 
         private struct PlacedEntry { public Vector3 pos; public float radius; }
@@ -151,7 +172,16 @@ namespace Skyship
             // (loose cargo stays on the default layer, so it doesn't block the ship).
             terrainLayer = LayerMask.NameToLayer("Terrain");
 
-            // Fixed order (identical on every peer): biggest islands first for packing, then derelicts.
+            // Mission request (same on every peer — the expedition id/seed are synced pre-load).
+            missionRequest = ExpeditionManager.Instance != null
+                ? ExpeditionManager.Instance.BuildGenerationRequest(usedSeed)
+                : null;
+
+            // Fixed order (identical on every peer): the objective site claims its spot first so
+            // the crew can always reach it, then biggest islands for packing, then derelicts.
+            if (missionRequest != null && missionRequest.requiredSiteType == MissionSiteType.Derelict)
+                SpawnObjectiveSite(missionRequest);
+
             SpawnIslandTier(MapStructureKind.IslandVeryLarge, veryLargeCount, veryLargeRadius);
             SpawnIslandTier(MapStructureKind.IslandLarge, largeCount, largeRadius);
             SpawnIslandTier(MapStructureKind.IslandMedium, mediumCount, mediumRadius);
@@ -159,6 +189,10 @@ namespace Skyship
 
             int derelicts = RandInt(derelictCountRange.x, derelictCountRange.y);
             for (int i = 0; i < derelicts; i++) SpawnDerelict(i);
+
+            // Cloud sea LAST: it consumes rng after every structure roll, so adding/tuning it
+            // never reshuffles island layouts for a given seed.
+            BuildCloudSea();
 
             ApplyAmbience();
 
@@ -170,7 +204,8 @@ namespace Skyship
             if (nm != null) nm.RefreshCargoRegistry();
 
             Debug.Log($"[WorldGenerator] seed={usedSeed}: {spawnedIslands} islands, {spawnedDerelicts} derelicts, " +
-                      $"{spawnedNodes} nodes, {spawnedCargo} cargo, {spawnedPrimitives} primitives.");
+                      $"{spawnedNodes} nodes, {spawnedCargo} cargo, {spawnedPrimitives} primitives" +
+                      (missionRequest != null ? $" — expedition '{missionRequest.expedition.expeditionId}'." : "."));
         }
 
         /// <summary>Distant islands need a long draw distance; linear fog sells the scale and hides the clip.</summary>
@@ -184,6 +219,36 @@ namespace Skyship
             RenderSettings.fogStartDistance = fogStartDistance;
             RenderSettings.fogEndDistance = fogEndDistance;
             RenderSettings.fogColor = fogColor;
+
+            // Region flavor on top of the defaults (the threat director scales from these values).
+            if (missionRequest != null && missionRequest.region != null)
+            {
+                RenderSettings.fogColor = missionRequest.region.fogColor;
+                RenderSettings.fogStartDistance = fogStartDistance * missionRequest.region.fogDistanceScale;
+                RenderSettings.fogEndDistance = fogEndDistance * missionRequest.region.fogDistanceScale;
+            }
+
+            ApplySkybox();
+        }
+
+        /// <summary>Region-tinted procedural skybox (shared implementation: SkyDressing).</summary>
+        private void ApplySkybox()
+        {
+            SkyDressing.ApplyProceduralSkybox(skyTint, skyGroundColor, skyExposure, atmosphereThickness);
+        }
+
+        /// <summary>The cloud deck far below the islands (shared implementation: SkyDressing).</summary>
+        private void BuildCloudSea()
+        {
+            SkyDressing.BuildCloudSea(
+                transform,
+                new Vector3(0f, -worldExtent.y * 0.5f - cloudSeaDepthBelow, 0f),
+                Mathf.Max(worldExtent.x, worldExtent.z) * 1.1f,
+                cloudPuffCount,
+                cloudColor,
+                Color.Lerp(cloudColor, skyGroundColor, 0.45f),
+                rng); // consumes the shared rng LAST in Generate, so island layouts stay put per seed
+            spawnedPrimitives += cloudPuffCount + 1;
         }
 
         // ========================================================================================
@@ -603,6 +668,69 @@ namespace Skyship
             }
         }
 
+        // ========================================================================================
+        // MISSION OBJECTIVE SITE — a guaranteed derelict near the spawn carrying the mission cargo
+        // ========================================================================================
+
+        /// <summary>
+        /// Place the expedition's required site: a medium derelict at a reachable distance from
+        /// the ship spawn (registered FIRST so islands pack around it), stocked with the
+        /// objective cargo. Fully deterministic: position/rotation/loot all come from the shared
+        /// rng and the synced request — no host/client branching.
+        /// </summary>
+        private void SpawnObjectiveSite(ExpeditionGenerationRequest req)
+        {
+            float length = RandRange(derelictLength.x, derelictLength.y);
+            float width = RandRange(derelictWidth.x, derelictWidth.y);
+
+            float ang = RandRange(0f, Mathf.PI * 2f);
+            float dist = spawnClearRadius + length * 0.5f + RandRange(300f, 700f);
+            float y = RandRange(-40f, 40f); // near spawn altitude so the crew can find it
+            Vector3 center = transform.position + new Vector3(Mathf.Cos(ang) * dist, y, Mathf.Sin(ang) * dist);
+            placed.Add(new PlacedEntry { pos = center, radius = length * 0.5f });
+
+            var derelict = new GameObject("ObjectiveDerelict");
+            derelict.transform.position = center;
+            derelict.transform.rotation = Quaternion.Euler(RandRange(-8f, 8f), RandRange(0f, 360f), RandRange(-6f, 6f));
+            derelict.transform.SetParent(transform, true);
+
+            float h = derelictDeckHeight;
+            BuildDerelictHull(derelict.transform, length, width, h);
+            BuildDerelictInterior(derelict.transform, length, width, h);
+            BuildDerelictSuperstructure(derelict.transform, length, width, h);
+            SetLayerRecursive(derelict, terrainLayer);
+            ScatterDerelictCargo(derelict.transform, length, width);   // ambient loot as usual
+            SpawnMissionCargo(req, derelict.transform, length, width); // + the objective cargo
+
+            structures.Add(new MapStructureInfo
+            {
+                name = derelict.name,
+                position = center,
+                radius = length * 0.5f,
+                kind = MapStructureKind.Objective // distinct marker on the ship's chart
+            });
+            spawnedDerelicts++;
+        }
+
+        /// <summary>Scatter the expedition's objective cargo through the site's rooms.</summary>
+        private void SpawnMissionCargo(ExpeditionGenerationRequest req, Transform ship, float L, float W)
+        {
+            var objective = req.expedition != null ? req.expedition.objective : null;
+            if (objective == null) return;
+            var def = CargoDatabase.Get(objective.targetCargoDefinitionId);
+            if (def == null) return;
+
+            // One unique item for a recovery objective; one spare above the requirement for
+            // collection objectives (so a crate lost overboard isn't an instant soft-lock).
+            int count = objective.kind == ObjectiveKind.RecoverObjectiveItem ? 1 : objective.requiredCount + 1;
+            for (int i = 0; i < count; i++)
+            {
+                Vector3 local = new Vector3(
+                    RandRange(-W * 0.35f, W * 0.35f), 1.2f, RandRange(-L * 0.4f, L * 0.4f));
+                SpawnDefinedCargoNamed($"MCargo_{def.cargoId}_{i:00}", def, ship.TransformPoint(local));
+            }
+        }
+
         /// <summary>Randomized spanning tree (iterative DFS) over the room grid → guaranteed-connected
         /// doorways, plus a few extra openings for loops/corridors. Deterministic from rng.</summary>
         private void CarveRoomConnections(int rows, int cols, bool[,] openV, bool[,] openH)
@@ -696,6 +824,60 @@ namespace Skyship
             }
             spawnedCargo++;
             return item;
+        }
+
+        /// <summary>
+        /// Spawn a crate from a CargoDefinition with an explicit (deterministic) name. Same
+        /// network contract as SpawnCargoNamed — idempotent naming keys the host cargo sync —
+        /// but the definition stamps the expedition fields (definitionId, objective flag,
+        /// corruption) and drives the placeholder visuals.
+        /// </summary>
+        public CargoItem SpawnDefinedCargoNamed(string cargoName, CargoDefinition def, Vector3 worldPos)
+        {
+            if (def == null)
+                return SpawnCargoNamed(cargoName, CargoCategory.Generic, worldPos);
+            if (cargoMats.Count == 0) BuildMaterials();
+
+            var go = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            go.name = cargoName; // network cargo sync keys on this
+            go.transform.position = worldPos;
+            go.transform.localScale = Vector3.one * def.visualScale;
+            go.GetComponent<Renderer>().sharedMaterial = DefinedCargoMaterial(def);
+            spawnedPrimitives++;
+
+            var item = go.AddComponent<CargoItem>(); // RequireComponent adds the Rigidbody
+            def.ApplyTo(item);
+
+            // Objective cargo gets an unmistakable placeholder beacon (spinning gem + glow).
+            if (def.isObjectiveItem)
+                ObjectiveBeacon.AttachTo(go);
+
+            // On non-authoritative clients keep crates kinematic; the host drives their positions.
+            var nm = NetworkManagerP2P.Instance;
+            if (nm != null && !nm.IsWorldAuthority)
+            {
+                var rb = go.GetComponent<Rigidbody>();
+                rb.isKinematic = true;
+                rb.useGravity = false;
+            }
+            spawnedCargo++;
+            return item;
+        }
+
+        private readonly Dictionary<string, Material> definedCargoMats = new Dictionary<string, Material>();
+
+        private Material DefinedCargoMaterial(CargoDefinition def)
+        {
+            if (definedCargoMats.TryGetValue(def.cargoId, out var m) && m != null) return m;
+            m = MakeMat(def.color);
+            if (def.emissive)
+            {
+                m.EnableKeyword("_EMISSION");
+                if (m.HasProperty("_EmissionColor"))
+                    m.SetColor("_EmissionColor", def.color * 0.6f + new Color(0.02f, 0.12f, 0.04f));
+            }
+            definedCargoMats[def.cargoId] = m;
+            return m;
         }
 
         // ========================================================================================

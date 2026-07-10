@@ -25,6 +25,7 @@ namespace Skyship
         [Header("Runtime (read-only)")]
         [SerializeField] private bool allAboard;
         [SerializeField] private float countdown = -1f;
+        [SerializeField] private string launchBlockReason = "";
 
         private NetworkManagerP2P nm;
 
@@ -42,8 +43,14 @@ namespace Skyship
             if (nm.IsWorldAuthority)
             {
                 // Host / solo owns the launch decision and drives the countdown value the clients see.
+                // Launch now ALSO requires a launchable expedition: selected at the Sky Chart with
+                // the fuel to cover it (ExpeditionManager validates + deducts).
+                var manager = ExpeditionManager.Instance;
+                bool expeditionReady = manager == null || manager.CanLaunch(out launchBlockReason);
+                if (expeditionReady) launchBlockReason = "";
+
                 allAboard = nm.AreAllPlayersAboard();
-                if (allAboard)
+                if (allAboard && expeditionReady)
                 {
                     if (countdown < 0f) countdown = countdownSeconds;
                     countdown -= Time.deltaTime;
@@ -52,6 +59,9 @@ namespace Skyship
                     if (countdown <= 0f)
                     {
                         enabled = false;               // scene is about to unload; stop ticking
+                        // Commit the expedition (deduct fuel, phase -> Active) BEFORE the launch
+                        // broadcast so the StartGame packet carries the expedition id.
+                        manager?.HostBeginExpedition();
                         nm.LaunchToWorld(worldSceneName);
                     }
                 }
@@ -120,8 +130,10 @@ namespace Skyship
                     fontSize = 16
                 };
                 hint.normal.textColor = new Color(1f, 1f, 1f, 0.8f);
-                GUI.Label(new Rect(0f, Screen.height - 46f, Screen.width, 30f),
-                    "Board the ship with your whole crew to launch a sortie", hint);
+                string text = !string.IsNullOrEmpty(launchBlockReason)
+                    ? launchBlockReason + "  —  press F at the menu board"
+                    : "Board the ship with your whole crew to launch the expedition";
+                GUI.Label(new Rect(0f, Screen.height - 46f, Screen.width, 30f), text, hint);
             }
         }
     }

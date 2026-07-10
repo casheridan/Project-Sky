@@ -49,6 +49,10 @@ namespace Skyship
         [Tooltip("If false, disables CharacterController and movement inputs but preserves mouse looking.")]
         public bool allowMovement = true;
 
+        // External view disturbance in degrees/frame (x = yaw, y = pitch), written each frame by
+        // effect systems (e.g. StaticScreamSystem's signal scream). Zeroed by the writer when done.
+        [System.NonSerialized] public Vector2 externalLookNoise;
+
         private CharacterController controller;
         private ShipRider rider;
         private float verticalVelocity;
@@ -105,9 +109,9 @@ namespace Skyship
             Vector2 delta = Mouse.current.delta.ReadValue();
 
             // Yaw rotates the whole body; pitch rotates only the camera.
-            transform.Rotate(Vector3.up, delta.x * lookSensitivity, Space.Self);
+            transform.Rotate(Vector3.up, delta.x * lookSensitivity + externalLookNoise.x, Space.Self);
 
-            pitch -= delta.y * lookSensitivity;
+            pitch -= delta.y * lookSensitivity + externalLookNoise.y;
             pitch = Mathf.Clamp(pitch, minPitch, maxPitch);
             cameraTransform.localRotation = Quaternion.Euler(pitch, 0f, 0f);
         }
