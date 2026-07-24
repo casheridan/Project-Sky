@@ -12,6 +12,9 @@ namespace Skyship
     /// This is a fully continuous, coordinate-weighted balance model where EVERY
     /// cargo box's physical coordinates on any deck surface contribute to balance.
     /// </summary>
+    // Anti-jitter execution chain (see ShipRider): tilt applies right after ship movement
+    // (-100) and before the deck-carry (-50) and player move (0).
+    [DefaultExecutionOrder(-90)]
     public class ShipBalanceController : MonoBehaviour
     {
         [Header("References")]
@@ -64,6 +67,38 @@ namespace Skyship
         public float turnPull;
         [Tooltip("0..1 strain from overload + imbalance, for warnings/FX.")]
         public float engineStrain;
+
+        // External tilt constraints from ship fixtures resting against the world (e.g. the
+        // boarding ramp grounded on terrain: the ground props the ship up instead of letting
+        // the tilt push the ramp through it). Owners re-assert these every frame while active
+        // and reset them to ±infinity when their contact ends. Sign convention: +Z roll = port
+        // (-X) down, so a grounded PORT ramp lowers externalRollMax.
+        [System.NonSerialized] public float externalRollMin = float.NegativeInfinity;
+        [System.NonSerialized] public float externalRollMax = float.PositiveInfinity;
+
+        // Storm rocking written by StormSystem (host only): additive roll/pitch degrees layered on
+        // top of the cargo-driven tilt target. Clients see it through the synced visualTilt.
+        [System.NonSerialized] public float externalRollAdd = 0f;
+        [System.NonSerialized] public float externalPitchAdd = 0f;
+
+        /// <summary>Phantom weight stuck to the hull (e.g. barnacles): counts toward load and
+        /// torque exactly like a crate at that ShipVisualRoot-local position. Owned/rebuilt by
+        /// BarnacleSystem on the authority each frame.</summary>
+        public struct ExternalWeight { public Vector3 localPos; public float weight; }
+        [System.NonSerialized] public List<ExternalWeight> externalWeights = new List<ExternalWeight>();
+
+        // One-shot tilt jolts (e.g. a leviathan breach slamming the deck): decay back to zero.
+        private float joltRoll, joltPitch;
+
+        /// <summary>Kick the deck: an impulse (degrees) layered on the tilt target that decays away.</summary>
+        public void AddTiltImpulse(float roll, float pitch)
+        {
+            joltRoll += roll;
+            joltPitch += pitch;
+        }
+
+        // Reused each frame to avoid allocations when gathering cargo held by aboard players.
+        private readonly List<CargoItem> heldAboard = new List<CargoItem>();
 
         private void Start()
         {
@@ -120,6 +155,45 @@ namespace Skyship
                 }
             }
 
+            // Also count cargo currently HELD by players standing on the deck, at the carrier's
+            // position. This makes carrying a crate tip the ship toward the carrier (only while
+            // carrying), and stops a held crate from dodging its weight until it's set down.
+            var nm = NetworkManagerP2P.Instance;
+            if (nm != null)
+            {
+                nm.CollectAboardHeldCargo(heldAboard);
+                for (int i = 0; i < heldAboard.Count; i++)
+                {
+                    CargoItem item = heldAboard[i];
+                    if (item == null) continue;
+
+                    float w = item.weight;
+                    totalWeight += w;
+
+                    Vector3 relativePos = shipVisualRoot.InverseTransformPoint(item.transform.position);
+                    rollTorque += w * relativePos.x;
+                    pitchTorque += w * relativePos.z;
+
+                    if (relativePos.x < -0.1f) leftWeight += w;
+                    else if (relativePos.x > 0.1f) rightWeight += w;
+
+                    if (relativePos.z > 0.1f) frontWeight += w;
+                    else if (relativePos.z < -0.1f) rearWeight += w;
+                }
+            }
+
+            // Phantom hull weights (barnacles): same continuous torque math as deck cargo.
+            for (int i = 0; i < externalWeights.Count; i++)
+            {
+                float w = externalWeights[i].weight;
+                Vector3 lp = externalWeights[i].localPos;
+                totalWeight += w;
+                rollTorque += w * lp.x;
+                pitchTorque += w * lp.z;
+                if (lp.x < -0.1f) leftWeight += w; else if (lp.x > 0.1f) rightWeight += w;
+                if (lp.z > 0.1f) frontWeight += w; else if (lp.z < -0.1f) rearWeight += w;
+            }
+
             loadPercent = maxCapacity > 0.01f ? totalWeight / maxCapacity : 0f;
 
             // Normalized -1..1 imbalances.
@@ -141,8 +215,16 @@ namespace Skyship
 
             // Roll about Z from left/right weight, pitch about X from front/rear.
             // Signs assume +X = right, +Z = forward.
-            float targetRoll = -rollImbalance * maxRollAngle;  // heavy-right dips right
-            float targetPitch = pitchImbalance * maxPitchAngle; // heavy-front dips nose down
+            // Decaying one-shot jolts (breaches etc.) on top of the steady external adds.
+            joltRoll = Mathf.MoveTowards(joltRoll, 0f, 12f * Time.deltaTime);
+            joltPitch = Mathf.MoveTowards(joltPitch, 0f, 12f * Time.deltaTime);
+
+            float targetRoll = -rollImbalance * maxRollAngle + externalRollAdd + joltRoll;    // heavy-right dips right
+            float targetPitch = pitchImbalance * maxPitchAngle + externalPitchAdd + joltPitch; // heavy-front dips nose down
+
+            // Fixtures braced against the world (grounded boarding ramp) cap how far the ship
+            // may lean toward them — the ground pushes back through the fixture.
+            targetRoll = Mathf.Clamp(targetRoll, externalRollMin, externalRollMax);
 
             Quaternion target = Quaternion.Euler(targetPitch, 0f, targetRoll);
             shipVisualRoot.localRotation = Quaternion.Slerp(

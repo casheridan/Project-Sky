@@ -291,7 +291,7 @@ MonoBehaviour:
           m_ObjectArgumentAssemblyTypeName: UnityEngine.Object, UnityEngine
           m_IntArgument: 0
           m_FloatArgument: 0
-          m_StringArgument:
+          m_StringArgument: 
           m_BoolArgument: 0
         m_CallState: 2
 --- !u!114 &120646292
@@ -582,7 +582,7 @@ MonoBehaviour:
           m_ObjectArgumentAssemblyTypeName: UnityEngine.Object, UnityEngine
           m_IntArgument: 0
           m_FloatArgument: 0
-          m_StringArgument:
+          m_StringArgument: 
           m_BoolArgument: 0
         m_CallState: 2
 --- !u!114 &171061299
@@ -874,7 +874,7 @@ MonoBehaviour:
           m_ObjectArgumentAssemblyTypeName: UnityEngine.Object, UnityEngine
           m_IntArgument: 0
           m_FloatArgument: 0
-          m_StringArgument:
+          m_StringArgument: 
           m_BoolArgument: 0
         m_CallState: 2
 --- !u!114 &225885932
@@ -1288,7 +1288,7 @@ MonoBehaviour:
           m_ObjectArgumentAssemblyTypeName: UnityEngine.Object, UnityEngine
           m_IntArgument: 0
           m_FloatArgument: 0
-          m_StringArgument:
+          m_StringArgument: 
           m_BoolArgument: 0
         m_CallState: 2
 --- !u!1 &491790049
@@ -1778,7 +1778,7 @@ MonoBehaviour:
           m_ObjectArgumentAssemblyTypeName: UnityEngine.Object, UnityEngine
           m_IntArgument: 0
           m_FloatArgument: 0
-          m_StringArgument:
+          m_StringArgument: 
           m_BoolArgument: 0
         m_CallState: 2
 --- !u!114 &836136041
@@ -1930,7 +1930,7 @@ MonoBehaviour:
           m_ObjectArgumentAssemblyTypeName: UnityEngine.Object, UnityEngine
           m_IntArgument: 0
           m_FloatArgument: 0
-          m_StringArgument:
+          m_StringArgument: 
           m_BoolArgument: 0
         m_CallState: 2
 --- !u!114 &840033250
@@ -2328,7 +2328,7 @@ MonoBehaviour:
           m_ObjectArgumentAssemblyTypeName: UnityEngine.Object, UnityEngine
           m_IntArgument: 0
           m_FloatArgument: 0
-          m_StringArgument:
+          m_StringArgument: 
           m_BoolArgument: 0
         m_CallState: 2
 --- !u!114 &938035468
@@ -2540,7 +2540,7 @@ MonoBehaviour:
           m_ObjectArgumentAssemblyTypeName: UnityEngine.Object, UnityEngine
           m_IntArgument: 0
           m_FloatArgument: 0
-          m_StringArgument:
+          m_StringArgument: 
           m_BoolArgument: 0
         m_CallState: 2
 --- !u!114 &1013645284
@@ -2660,6 +2660,61 @@ CanvasRenderer:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 1088685723}
   m_CullTransparentMesh: 1
+--- !u!1 &1173392669
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 1173392671}
+  - component: {fileID: 1173392670}
+  m_Layer: 0
+  m_Name: NetworkManager
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!114 &1173392670
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1173392669}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: e518907c72a8a344ea7a97d9f200b071, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::Skyship.NetworkManagerP2P
+  localPort: 7777
+  remoteIp: 127.0.0.1
+  remotePort: 7777
+  updateRate: 0.05
+  showImguiDebugHUD: 0
+  puppetColor: {r: 1, g: 0.6470588, b: 0, a: 1}
+  fallRespawnDistance: 60
+  isHost: 0
+  isConnected: 0
+  localPlayerId: 
+  worldSeed: 0
+--- !u!4 &1173392671
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1173392669}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &1177253967
 GameObject:
   m_ObjectHideFlags: 0
@@ -2749,7 +2804,6 @@ GameObject:
   m_Component:
   - component: {fileID: 1238639178}
   - component: {fileID: 1238639177}
-  - component: {fileID: 1238639176}
   m_Layer: 0
   m_Name: MainMenuManager
   m_TagString: Untagged
@@ -2757,27 +2811,6 @@ GameObject:
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
   m_IsActive: 1
---- !u!114 &1238639176
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1238639175}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: e518907c72a8a344ea7a97d9f200b071, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::Skyship.NetworkManagerP2P
-  localPort: 7777
-  remoteIp: 127.0.0.1
-  remotePort: 7777
-  updateRate: 0.05
-  showImguiDebugHUD: 0
-  puppetColor: {r: 1, g: 0.6470588, b: 0, a: 1}
-  isHost: 0
-  isConnected: 0
-  localPlayerId: 
 --- !u!114 &1238639177
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -2800,7 +2833,7 @@ MonoBehaviour:
   ipInputField: {fileID: 1487870334}
   volumeSlider: {fileID: 418361768}
   sensitivitySlider: {fileID: 836136040}
-  gameplaySceneName: MainGameScene
+  gameplaySceneName: HubScene
 --- !u!4 &1238639178
 Transform:
   m_ObjectHideFlags: 0
@@ -3183,7 +3216,7 @@ MonoBehaviour:
           m_ObjectArgumentAssemblyTypeName: UnityEngine.Object, UnityEngine
           m_IntArgument: 0
           m_FloatArgument: 0
-          m_StringArgument:
+          m_StringArgument: 
           m_BoolArgument: 0
         m_CallState: 2
 --- !u!1 &1463173220
@@ -3742,7 +3775,7 @@ MonoBehaviour:
           m_ObjectArgumentAssemblyTypeName: UnityEngine.Object, UnityEngine
           m_IntArgument: 0
           m_FloatArgument: 0
-          m_StringArgument:
+          m_StringArgument: 
           m_BoolArgument: 0
         m_CallState: 2
 --- !u!114 &1949697491
@@ -3954,7 +3987,7 @@ MonoBehaviour:
           m_ObjectArgumentAssemblyTypeName: UnityEngine.Object, UnityEngine
           m_IntArgument: 0
           m_FloatArgument: 0
-          m_StringArgument:
+          m_StringArgument: 
           m_BoolArgument: 0
         m_CallState: 2
 --- !u!114 &2062596885
@@ -4003,3 +4036,4 @@ SceneRoots:
   - {fileID: 1446867728}
   - {fileID: 871178357}
   - {fileID: 1238639178}
+  - {fileID: 1173392671}

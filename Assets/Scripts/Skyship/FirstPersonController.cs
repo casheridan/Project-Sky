@@ -27,8 +27,13 @@ namespace Skyship
 
         [Header("Movement")]
         public float moveSpeed = 5f;
+        [Tooltip("Walk speed is multiplied by this while holding Sprint (Left Shift).")]
+        public float sprintMultiplier = 1.7f;
         public float jumpForce = 5f;
         public float gravity = -20f;
+        [Tooltip("Grace window after leaving the ground where a jump still registers. Also bridges the " +
+                 "1-frame isGrounded flicker caused by the ship deck-follow, so you can jump on a moving ship.")]
+        public float coyoteTime = 0.12f;
 
         [Header("Look")]
         [Tooltip("Mouse look sensitivity (degrees per unit of mouse delta).")]
@@ -44,13 +49,20 @@ namespace Skyship
         [Tooltip("If false, disables CharacterController and movement inputs but preserves mouse looking.")]
         public bool allowMovement = true;
 
+        // External view disturbance in degrees/frame (x = yaw, y = pitch), written each frame by
+        // effect systems (e.g. StaticScreamSystem's signal scream). Zeroed by the writer when done.
+        [System.NonSerialized] public Vector2 externalLookNoise;
+
         private CharacterController controller;
+        private ShipRider rider;
         private float verticalVelocity;
         private float pitch;
+        private float coyoteTimer;
 
         private void Awake()
         {
             controller = GetComponent<CharacterController>();
+            rider = GetComponent<ShipRider>();
             if (cameraTransform == null && Camera.main != null)
                 cameraTransform = Camera.main.transform;
         }
@@ -82,6 +94,14 @@ namespace Skyship
             }
         }
 
+        /// <summary>Zero out accumulated fall velocity (used by teleports/respawns so the player
+        /// doesn't arrive still falling at terminal speed).</summary>
+        public void CancelFall()
+        {
+            verticalVelocity = 0f;
+            coyoteTimer = 0f;
+        }
+
         private void HandleLook()
         {
             if (Mouse.current == null || cameraTransform == null) return;
@@ -89,9 +109,9 @@ namespace Skyship
             Vector2 delta = Mouse.current.delta.ReadValue();
 
             // Yaw rotates the whole body; pitch rotates only the camera.
-            transform.Rotate(Vector3.up, delta.x * lookSensitivity, Space.Self);
+            transform.Rotate(Vector3.up, delta.x * lookSensitivity + externalLookNoise.x, Space.Self);
 
-            pitch -= delta.y * lookSensitivity;
+            pitch -= delta.y * lookSensitivity + externalLookNoise.y;
             pitch = Mathf.Clamp(pitch, minPitch, maxPitch);
             cameraTransform.localRotation = Quaternion.Euler(pitch, 0f, 0f);
         }
@@ -102,18 +122,38 @@ namespace Skyship
             Vector3 move = transform.right * input.x + transform.forward * input.y;
             if (move.sqrMagnitude > 1f) move.Normalize();
 
+            var k = Keyboard.current;
+            bool sprinting = k != null && k.leftShiftKey.isPressed;
+            float speed = sprinting ? moveSpeed * sprintMultiplier : moveSpeed;
+
+            // Coyote time: keep "grounded" briefly after contact so a single-frame isGrounded flicker
+            // (from the deck-follow moving us) doesn't swallow the jump on a moving ship.
             if (controller.isGrounded)
             {
+                coyoteTimer = coyoteTime;
                 verticalVelocity = -1f; // small downward bias keeps us grounded
-                if (enableJump && Keyboard.current != null && Keyboard.current.spaceKey.wasPressedThisFrame)
-                    verticalVelocity = jumpForce;
             }
             else
             {
+                coyoteTimer -= Time.deltaTime;
                 verticalVelocity += gravity * Time.deltaTime;
+
+                // Riding a moving deck, single-frame isGrounded flickers happen (physics step
+                // timing vs the deck's per-frame motion). Inside the coyote window — i.e. we
+                // were grounded a moment ago and did NOT jump (jumping consumes the timer) —
+                // don't let gravity wind up, or it releases as a visible pop when grounding
+                // re-establishes. Real walk-offs get normal gravity after the window expires.
+                if (rider != null && rider.IsRiding && coyoteTimer > 0f)
+                    verticalVelocity = Mathf.Max(verticalVelocity, -1f);
             }
 
-            Vector3 velocity = move * moveSpeed + Vector3.up * verticalVelocity;
+            if (enableJump && k != null && k.spaceKey.wasPressedThisFrame && coyoteTimer > 0f)
+            {
+                verticalVelocity = jumpForce;
+                coyoteTimer = 0f; // consume so we can't double-jump
+            }
+
+            Vector3 velocity = move * speed + Vector3.up * verticalVelocity;
             controller.Move(velocity * Time.deltaTime);
         }
 

@@ -44,10 +44,18 @@ namespace Skyship
 
             bool pickDropPressed = k != null && k.eKey.wasPressedThisFrame;
             bool dropClick = m != null && m.leftButton.wasPressedThisFrame;
+            bool stationPressed = k != null && k.fKey.wasPressedThisFrame;
+
+            // F aimed at a ship station engages it: wheel (toggle helm), levers (hold to work),
+            // ramp button (press), map table (chart view). Each station handles its own
+            // controls/exit from there. E stays purely for cargo and resource nodes.
+            if (stationPressed && TryUseStation())
+                return;
 
             if (heldItem == null)
             {
-                if (pickDropPressed)
+                // E priority: resource node harvest, then hull-barnacle scrape, then cargo pickup.
+                if (pickDropPressed && !TryHarvestNode() && !TryScrapeBarnacle())
                     TryPickUp();
             }
             else
@@ -55,6 +63,105 @@ namespace Skyship
                 if (pickDropPressed || dropClick)
                     DropHeld();
             }
+        }
+
+        /// <summary>
+        /// If the interaction ray hits a ResourceNode, harvest one crate from it and return true.
+        /// Routed through the network manager: the authority harvests immediately, a connected
+        /// client asks the host and the crate appears with the HarvestResult packet.
+        /// </summary>
+        private bool TryHarvestNode()
+        {
+            if (!RaycastFromCamera(out RaycastHit hit)) return false;
+            var node = hit.collider.GetComponentInParent<ResourceNode>();
+            if (node == null) return false;
+            if (node.IsDepleted) return true; // spent husk: swallow the press, no crate
+
+            Vector3 forward = cameraTransform != null ? cameraTransform.forward : transform.forward;
+            var nm = NetworkManagerP2P.Instance;
+            if (nm != null)
+                nm.RequestHarvest(node, transform.position, forward);
+            else
+                HarvestLocally(node); // scene running without a network manager
+            return true;
+        }
+
+        private void HarvestLocally(ResourceNode node)
+        {
+            var gen = FindAnyObjectByType<WorldGenerator>();
+            if (gen == null) return;
+
+            string crateName = node.NextCargoName; // derive BEFORE consuming so the index matches
+            Vector3 forward = cameraTransform != null ? cameraTransform.forward : transform.forward;
+            Vector3 dropPos = ResourceNode.FindDropPoint(transform.position, forward, node.transform.position);
+
+            if (!node.TryConsumeOne()) return;
+            gen.SpawnCargoNamed(crateName, node.CargoCategory, dropPos);
+            Debug.Log($"[PlayerInteraction] Harvested '{crateName}' ({node.nodeType}) — " +
+                      $"{node.remainingYield}/{node.maxYield} left in node.");
+        }
+
+        /// <summary>If the interaction ray hits a hull barnacle, scrape it (host-validated via
+        /// BarnacleSystem) and return true.</summary>
+        private bool TryScrapeBarnacle()
+        {
+            if (!RaycastFromCamera(out RaycastHit hit)) return false;
+            var barnacle = hit.collider.GetComponentInParent<Barnacle>();
+            if (barnacle == null) return false;
+            BarnacleSystem.RequestScrape(barnacle.id);
+            return true;
+        }
+
+        /// <summary>F dispatch: deck lever (hold to work), ramp button, wheel (toggle helm), or
+        /// map-table chart view — whichever the ray hits.</summary>
+        private bool TryUseStation()
+        {
+            if (!RaycastFromCamera(out RaycastHit hit)) return false;
+
+            var lever = hit.collider.GetComponentInParent<ShipDeckLever>();
+            if (lever != null)
+            {
+                lever.BeginGrab(gameObject); // held while F stays down; no-op if already grabbed
+                return true;
+            }
+
+            var rampButton = hit.collider.GetComponentInParent<ShipRampButton>();
+            if (rampButton != null)
+            {
+                rampButton.Press();
+                return true;
+            }
+
+            if (hit.collider.GetComponentInParent<ShipHelm>() != null)
+            {
+                if (NetworkManagerP2P.Instance != null)
+                    NetworkManagerP2P.Instance.ToggleLocalHelm();
+                return true;
+            }
+
+            var table = hit.collider.GetComponentInParent<ShipMapTable>();
+            if (table != null)
+            {
+                table.ToggleView(gameObject);
+                return true;
+            }
+
+            // Hub Sky Chart (expedition selection UI).
+            var chart = hit.collider.GetComponentInParent<SkyChartTable>();
+            if (chart != null)
+            {
+                chart.ToggleView(gameObject);
+                return true;
+            }
+
+            // Return-to-Port bell on deck (host-validated via ExpeditionManager).
+            var returnStation = hit.collider.GetComponentInParent<ShipReturnStation>();
+            if (returnStation != null)
+            {
+                returnStation.Press();
+                return true;
+            }
+            return false;
         }
 
         private bool RaycastFromCamera(out RaycastHit hit)
@@ -71,6 +178,11 @@ namespace Skyship
 
             CargoItem item = hit.collider.GetComponentInParent<CargoItem>();
             if (item == null) return;
+
+            // Light host-arbitration: an item already flagged held (locally or by a remote player
+            // via the sync) can't be double-picked. Pickup itself stays optimistic-local for feel;
+            // the host's heldCargoName sync remains the source of truth for conflicts.
+            if (item.isHeld) return;
 
             item.OnPickedUp(holdPoint);
             heldItem = item;

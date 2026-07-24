@@ -3,6 +3,25 @@ using UnityEngine;
 namespace Skyship
 {
     /// <summary>
+    /// Broad loot/resource type. Islands yield raw resources (plus occasional fuel/treasure);
+    /// derelict ships yield repair cargo, special cargo, fuel, and treasure. Back at base these
+    /// get forged into usable cargo, fuel, and upgrades (economy is future work).
+    /// </summary>
+    public enum CargoCategory
+    {
+        Generic,
+        RawResource,
+        Fuel,
+        Treasure,
+        RepairCargo,
+        SpecialCargo,
+        // Node-harvested raw resources (see ResourceNode). Appended so existing serialized values keep their meaning.
+        Stone,
+        Ore,
+        Crystal
+    }
+
+    /// <summary>
     /// An interactable salvage item the player can carry and drop. Physics are ON
     /// while loose (including gravity, sliding, and rolling). Its weight is
     /// dynamically integrated into the ship's balance based on its exact local
@@ -14,11 +33,24 @@ namespace Skyship
         [Header("Identity")]
         public string itemName = "Crate";
 
+        [Tooltip("Loot/resource category. Drives where it spawns and what it forges into.")]
+        public CargoCategory category = CargoCategory.Generic;
+
         [Tooltip("Weight in arbitrary units. Drives ship balance & load.")]
         public float weight = 10f;
 
-        [Tooltip("Salvage value. Not used by the balance sim yet.")]
+        [Tooltip("Salvage value. Converted to money/scrap/fuel by the return-to-port tally.")]
         public float value = 50f;
+
+        [Header("Expedition (stamped from a CargoDefinition; empty for legacy prototype cubes)")]
+        [Tooltip("CargoDatabase id this item was spawned from. Objective tracking matches on this.")]
+        public string definitionId = "";
+        [Tooltip("Mission-critical cargo (e.g. the Black Navigation Box).")]
+        public bool isObjectiveItem;
+        [Tooltip("Eldritch corruption carried aboard — feeds the threat director.")]
+        public float corruptionValue;
+        [Tooltip("Extra ship strain beyond raw weight (future stability sim).")]
+        public float stabilityImpact;
 
         [Header("Runtime state (read-only)")]
         public bool isHeld;
