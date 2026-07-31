@@ -67,6 +67,14 @@ namespace Skyship
         }
 
         [System.Serializable]
+        public class BarrierNetworkData
+        {
+            public string id;       // deterministic generated segment id (Rail_Port_A_00...)
+            public float integrity; // 0..1, includes permanent sustained-load fatigue
+            public bool broken;
+        }
+
+        [System.Serializable]
         public class ShipNetworkData
         {
             public Vector3 position;
@@ -78,7 +86,7 @@ namespace Skyship
         public class NetworkPacket
         {
             public string senderId;
-            public string packetType; // "Handshake", "Welcome", "Disconnect", "StartGame", "State", "ClaimHelm", "ReleaseHelm", "HarvestRequest", "HarvestResult", "ReturnRequest", "ReturnToPort", "ExpeditionEvent"
+            public string packetType; // Includes State, station requests, harvest, BarrierRepair, and expedition events.
             public int spawnSlot; // host->client: assigned spawn index (Welcome packet)
             public int worldSeed; // host->clients (StartGame): seed for deterministic world generation
 
@@ -102,6 +110,11 @@ namespace Skyship
             // -1 = not included, 0 = stowed, 1 = deployed.
             public int rampDeployed = -1;
 
+            // Breakable railings (client->host "BarrierRepair"; host->clients in State).
+            public string barrierId;
+            public Vector3 barrierPlayerPos;
+            public int barrierSurfaceCondition = -1;
+
             // Resource-node harvesting (client->host "HarvestRequest", host->clients "HarvestResult").
             public string harvestNodeId;
             public Vector3 harvestPlayerPos;     // request: where the harvester stands (drop point is computed near them)
@@ -114,6 +127,7 @@ namespace Skyship
             public List<PlayerNetworkData> players = new List<PlayerNetworkData>();
             public List<CargoNetworkData> cargo = new List<CargoNetworkData>();
             public List<NodeNetworkData> nodes = new List<NodeNetworkData>(); // host State: node yields (self-healing)
+            public List<BarrierNetworkData> barriers = new List<BarrierNetworkData>();
             public ShipNetworkData ship = new ShipNetworkData();
         }
 
@@ -190,6 +204,7 @@ namespace Skyship
         private ShipThrottleLever shipThrottleLever;
         private ShipLiftLever shipLiftLever;
         private ShipBoardingRamp shipBoardingRamp;
+        private ShipBarrierSystem shipBarrierSystem;
 
         /// <summary>The ship's telegraph (built at runtime by ShipHelm, so bind lazily).</summary>
         private ShipThrottleLever Lever
@@ -205,6 +220,11 @@ namespace Skyship
         private ShipBoardingRamp Ramp
             => shipBoardingRamp != null ? shipBoardingRamp
              : (shipBoardingRamp = UnityEngine.Object.FindAnyObjectByType<ShipBoardingRamp>());
+
+        /// <summary>Generated modular railings (built at runtime by ShipHelm).</summary>
+        private ShipBarrierSystem Barriers
+            => shipBarrierSystem != null ? shipBarrierSystem
+             : (shipBarrierSystem = UnityEngine.Object.FindAnyObjectByType<ShipBarrierSystem>());
 
         // Steering-wheel piloting. The host owns the authoritative pilot lock; clients learn it
         // from the host's State packets. Empty string = nobody is at the helm.
@@ -364,6 +384,7 @@ namespace Skyship
             shipThrottleLever = UnityEngine.Object.FindAnyObjectByType<ShipThrottleLever>();
             shipLiftLever = UnityEngine.Object.FindAnyObjectByType<ShipLiftLever>();
             shipBoardingRamp = UnityEngine.Object.FindAnyObjectByType<ShipBoardingRamp>();
+            shipBarrierSystem = UnityEngine.Object.FindAnyObjectByType<ShipBarrierSystem>();
 
             // Fresh scene: nobody is at the helm yet, and the local player isn't seated.
             currentPilotId = "";
@@ -664,6 +685,30 @@ namespace Skyship
         }
 
         /// <summary>
+        /// Repair a damaged/broken railing. Solo/host applies immediately; a client asks the host,
+        /// which validates the requested segment and distance before the next State confirms it.
+        /// </summary>
+        public void RequestBarrierRepair(ShipBarrierSegment segment, Vector3 playerPosition)
+        {
+            if (segment == null || !segment.NeedsRepair || Barriers == null) return;
+
+            if (LocalAuthority)
+            {
+                Barriers.TryRepair(segment.barrierId, playerPosition);
+            }
+            else if (hostEndPoint != null)
+            {
+                SendPacketDirect(new NetworkPacket
+                {
+                    senderId = localPlayerId,
+                    packetType = "BarrierRepair",
+                    barrierId = segment.barrierId,
+                    barrierPlayerPos = playerPosition
+                }, hostEndPoint);
+            }
+        }
+
+        /// <summary>
         /// Read flight controls for whoever is locally at the helm: WASD = throttle/turn,
         /// Space = climb, Left Shift = descend.
         /// </summary>
@@ -949,6 +994,23 @@ namespace Skyship
                 if (Lever != null) statePacket.throttleValue = Lever.CurrentThrottle; // authoritative telegraph (analog)
                 if (LiftLever != null) statePacket.liftStage = LiftLever.Stage;    // authoritative lift lever
                 if (Ramp != null) statePacket.rampDeployed = Ramp.DeployedTarget ? 1 : 0;
+                if (Barriers != null)
+                {
+                    if (Barriers.DeckSurface != null)
+                        statePacket.barrierSurfaceCondition = (int)Barriers.DeckSurface.CurrentCondition;
+                    var barrierSegments = Barriers.Segments;
+                    for (int i = 0; i < barrierSegments.Count; i++)
+                    {
+                        ShipBarrierSegment segment = barrierSegments[i];
+                        if (segment == null) continue;
+                        statePacket.barriers.Add(new BarrierNetworkData
+                        {
+                            id = segment.barrierId,
+                            integrity = segment.integrity,
+                            broken = segment.broken
+                        });
+                    }
+                }
 
                 // Sync ship positions & tilts
                 if (shipTransform != null)
@@ -1238,6 +1300,13 @@ namespace Skyship
                 return;
             }
 
+            if (packet.packetType == "BarrierRepair")
+            {
+                if (isHost && Barriers != null)
+                    Barriers.TryRepair(packet.barrierId, packet.barrierPlayerPos);
+                return;
+            }
+
             // Harvest requests are host-authoritative (clients ask, host validates + broadcasts).
             if (packet.packetType == "HarvestRequest")
             {
@@ -1383,6 +1452,18 @@ namespace Skyship
                     LiftLever.ApplyRemoteStage(packet.liftStage);
                 if (packet.rampDeployed >= 0 && Ramp != null)
                     Ramp.ApplyRemoteDeployed(packet.rampDeployed == 1);
+                if (Barriers != null)
+                {
+                    if (packet.barrierSurfaceCondition >= 0 && Barriers.DeckSurface != null)
+                        Barriers.DeckSurface.ApplyRemoteCondition(packet.barrierSurfaceCondition);
+                    int barrierCount = packet.barriers != null ? packet.barriers.Count : 0;
+                    for (int i = 0; i < barrierCount; i++)
+                    {
+                        BarrierNetworkData data = packet.barriers[i];
+                        if (data != null)
+                            Barriers.ApplyRemoteState(data.id, data.integrity, data.broken);
+                    }
+                }
             }
 
             // Sync other player positions & pickups
@@ -1551,21 +1632,12 @@ namespace Skyship
                 {
                     if (puppet != null)
                     {
-                        // Set the cargo item kinematic so it follows the puppet hand
-                        Rigidbody rb = item.Body;
-                        if (rb != null)
-                        {
-                            rb.isKinematic = true;
-                            rb.useGravity = false;
-                        }
-
-                        var itemCol = item.GetComponent<Collider>();
-                        if (itemCol != null) itemCol.enabled = false;
-
-                        item.transform.SetParent(puppet.transform);
-                        item.transform.localPosition = new Vector3(0f, 0f, 1.2f); // hold position in front of puppet
-                        item.transform.localRotation = Quaternion.identity;
-                        item.isHeld = true;
+                        // Use the same held-physics transition as the local player. In particular,
+                        // disable Rigidbody interpolation so it cannot render the old loose-cargo
+                        // pose while its puppet parent moves.
+                        item.OnPickedUp(puppet.transform);
+                        item.FollowHoldPoint(puppet.transform,
+                            new Vector3(0f, 0f, 1.2f), Quaternion.identity);
                     }
                 }
             }

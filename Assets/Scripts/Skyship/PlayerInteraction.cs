@@ -27,14 +27,15 @@ namespace Skyship
         public float interactionDistance = 3f;
         [Tooltip("Layers the interaction ray can hit. Default = Everything.")]
         public LayerMask interactionMask = ~0;
+        [Tooltip("Minimum downward speed applied when cargo is released, removing the floaty zero-velocity drop.")]
+        [Min(0f)] public float dropDownwardSpeed = 2.5f;
 
         private CargoItem heldItem;
         public CargoItem HeldItem => heldItem;
 
         private void Awake()
         {
-            if (cameraTransform == null && Camera.main != null)
-                cameraTransform = Camera.main.transform;
+            ResolveHoldPoint();
         }
 
         private void Update()
@@ -54,8 +55,9 @@ namespace Skyship
 
             if (heldItem == null)
             {
-                // E priority: resource node harvest, then hull-barnacle scrape, then cargo pickup.
-                if (pickDropPressed && !TryHarvestNode() && !TryScrapeBarnacle())
+                // E priority: repair a damaged railing, harvest a resource node, scrape a
+                // hull barnacle, then pick up cargo.
+                if (pickDropPressed && !TryRepairBarrier() && !TryHarvestNode() && !TryScrapeBarnacle())
                     TryPickUp();
             }
             else
@@ -63,6 +65,67 @@ namespace Skyship
                 if (pickDropPressed || dropClick)
                     DropHeld();
             }
+        }
+
+        private void LateUpdate()
+        {
+            if (heldItem == null) return;
+
+            // CharacterController movement and mouse-look both happen in Update. Reassert the
+            // carried pose afterward so the crate follows the final camera pose for this frame.
+            if (ResolveHoldPoint())
+                heldItem.FollowHoldPoint(holdPoint);
+        }
+
+        /// <summary>
+        /// Keep scene wiring resilient. Authored scenes assign these references, but a generated
+        /// or copied player should still receive a functional camera-relative hold point.
+        /// </summary>
+        private bool ResolveHoldPoint()
+        {
+            if (cameraTransform == null && Camera.main != null)
+                cameraTransform = Camera.main.transform;
+            if (cameraTransform == null) return false;
+
+            if (holdPoint == null)
+            {
+                Transform found = cameraTransform.Find("HoldPoint");
+                if (found != null)
+                {
+                    holdPoint = found;
+                }
+                else
+                {
+                    GameObject created = new GameObject("HoldPoint");
+                    holdPoint = created.transform;
+                    holdPoint.SetParent(cameraTransform, false);
+                    holdPoint.localPosition = new Vector3(0f, -0.3f, 1.2f);
+                    holdPoint.localRotation = Quaternion.identity;
+                    Debug.LogWarning("[PlayerInteraction] Created a missing HoldPoint under the player camera.");
+                }
+            }
+            return true;
+        }
+
+        /// <summary>
+        /// Repair a damaged/broken railing module. The invisible interaction trigger survives
+        /// breakage, so the gap can still be targeted. Host validates range and owns the state.
+        /// </summary>
+        private bool TryRepairBarrier()
+        {
+            if (!RaycastFromCamera(out RaycastHit hit)) return false;
+            var segment = hit.collider.GetComponentInParent<ShipBarrierSegment>();
+            if (segment == null || !segment.NeedsRepair) return false;
+
+            var nm = NetworkManagerP2P.Instance;
+            if (nm != null)
+                nm.RequestBarrierRepair(segment, transform.position);
+            else
+            {
+                var system = segment.GetComponentInParent<ShipBarrierSystem>();
+                if (system != null) system.TryRepair(segment.barrierId, transform.position);
+            }
+            return true;
         }
 
         /// <summary>
@@ -183,8 +246,11 @@ namespace Skyship
             // via the sync) can't be double-picked. Pickup itself stays optimistic-local for feel;
             // the host's heldCargoName sync remains the source of truth for conflicts.
             if (item.isHeld) return;
+            if (!ResolveHoldPoint()) return;
 
             item.OnPickedUp(holdPoint);
+            if (!item.isHeld) return;
+
             heldItem = item;
             Debug.Log($"[PlayerInteraction] Picked up '{item.itemName}' ({item.weight} kg).");
         }
@@ -193,7 +259,14 @@ namespace Skyship
         {
             if (heldItem == null) return;
             Debug.Log($"[PlayerInteraction] Dropped '{heldItem.itemName}'.");
-            heldItem.OnDropped();
+
+            // Preserve walking/deck movement so the crate keeps travelling with its carrier,
+            // then ensure it separates downward from the camera-height hold point immediately.
+            CharacterController controller = GetComponent<CharacterController>();
+            Vector3 releaseVelocity = controller != null ? controller.velocity : Vector3.zero;
+            releaseVelocity.y = Mathf.Min(releaseVelocity.y, -dropDownwardSpeed);
+
+            heldItem.OnDropped(releaseVelocity);
             heldItem = null;
         }
     }

@@ -714,6 +714,7 @@ MonoBehaviour:
   updateRate: 0.05
   showImguiDebugHUD: 0
   puppetColor: {r: 1, g: 0.6470588, b: 0, a: 1}
+  fallRespawnDistance: 60
   isHost: 0
   isConnected: 0
   localPlayerId: 
@@ -2040,31 +2041,31 @@ PrefabInstance:
       objectReference: {fileID: 0}
     - target: {fileID: 3756472464338049285, guid: 120b5d24678a07340bd7eb35282ffe3c, type: 3}
       propertyPath: m_LocalPosition.x
-      value: 0
+      value: -0.79
       objectReference: {fileID: 0}
     - target: {fileID: 3756472464338049285, guid: 120b5d24678a07340bd7eb35282ffe3c, type: 3}
       propertyPath: m_LocalPosition.y
-      value: 3.52
+      value: 3.5199995
       objectReference: {fileID: 0}
     - target: {fileID: 3756472464338049285, guid: 120b5d24678a07340bd7eb35282ffe3c, type: 3}
       propertyPath: m_LocalPosition.z
-      value: -7.57
+      value: 0
       objectReference: {fileID: 0}
     - target: {fileID: 3756472464338049285, guid: 120b5d24678a07340bd7eb35282ffe3c, type: 3}
       propertyPath: m_LocalRotation.w
-      value: 1
+      value: 0.00000016391276
       objectReference: {fileID: 0}
     - target: {fileID: 3756472464338049285, guid: 120b5d24678a07340bd7eb35282ffe3c, type: 3}
       propertyPath: m_LocalRotation.x
-      value: 0
+      value: -0
       objectReference: {fileID: 0}
     - target: {fileID: 3756472464338049285, guid: 120b5d24678a07340bd7eb35282ffe3c, type: 3}
       propertyPath: m_LocalRotation.y
-      value: 0
+      value: -1
       objectReference: {fileID: 0}
     - target: {fileID: 3756472464338049285, guid: 120b5d24678a07340bd7eb35282ffe3c, type: 3}
       propertyPath: m_LocalRotation.z
-      value: 0
+      value: -0
       objectReference: {fileID: 0}
     - target: {fileID: 3756472464338049285, guid: 120b5d24678a07340bd7eb35282ffe3c, type: 3}
       propertyPath: m_LocalEulerAnglesHint.x
@@ -2072,7 +2073,7 @@ PrefabInstance:
       objectReference: {fileID: 0}
     - target: {fileID: 3756472464338049285, guid: 120b5d24678a07340bd7eb35282ffe3c, type: 3}
       propertyPath: m_LocalEulerAnglesHint.y
-      value: 0
+      value: -180
       objectReference: {fileID: 0}
     - target: {fileID: 3756472464338049285, guid: 120b5d24678a07340bd7eb35282ffe3c, type: 3}
       propertyPath: m_LocalEulerAnglesHint.z
@@ -2434,6 +2435,7 @@ MonoBehaviour:
   countdownSeconds: 5
   allAboard: 0
   countdown: -1
+  launchBlockReason: 
 --- !u!1 &1155279322
 GameObject:
   m_ObjectHideFlags: 0
@@ -3516,8 +3518,10 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::Skyship.FirstPersonController
   cameraTransform: {fileID: 2026450819}
   moveSpeed: 5
+  sprintMultiplier: 1.7
   jumpForce: 5
   gravity: -20
+  coyoteTime: 0.12
   lookSensitivity: 0.1
   minPitch: -89
   maxPitch: 89

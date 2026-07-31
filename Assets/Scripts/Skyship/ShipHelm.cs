@@ -49,7 +49,11 @@ namespace Skyship
             ShipThrottleLever.CreateNear(transform);
             ShipLiftLever.CreateNear(transform);
             var balance = GetComponentInParent<ShipBalanceController>();
-            if (balance != null) ShipBoardingRamp.CreateOnShip(balance);
+            if (balance != null)
+            {
+                ShipBoardingRamp.CreateOnShip(balance);
+                ShipBarrierSystem.CreateOnShip(balance);
+            }
         }
 
         /// <summary>Seat the local player at the helm and lock their walking (look stays on).</summary>

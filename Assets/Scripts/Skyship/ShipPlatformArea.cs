@@ -27,6 +27,8 @@ namespace Skyship
 
         private Vector3 lastPosition;
 
+        public Vector3 CurrentShipVelocity => currentShipVelocity;
+
         private void Start()
         {
             lastPosition = transform.position;

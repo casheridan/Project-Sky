@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using UnityEngine;
 
 namespace Skyship
@@ -52,13 +53,26 @@ namespace Skyship
         [Tooltip("Extra ship strain beyond raw weight (future stability sim).")]
         public float stabilityImpact;
 
+        [Header("Deck Contact")]
+        [Tooltip("Apply a category-flavoured grip/impact profile at Start. Disable to tune this item by hand.")]
+        public bool useCategorySurfaceDefaults = true;
+        [Tooltip("Multiplies deck traction. Below 1 slides more; above 1 grips more.")]
+        [Range(0.1f, 2f)] public float deckGripMultiplier = 1f;
+        [Tooltip("Multiplies collision damage transferred into breakable barriers.")]
+        [Range(0.1f, 2f)] public float barrierImpactMultiplier = 1f;
+        [Tooltip("Unity Rigidbody mass per gameplay weight unit. Gameplay balance still uses 'weight' directly.")]
+        [Min(0.005f)] public float physicsMassPerWeight = 0.05f;
+
         [Header("Runtime state (read-only)")]
         public bool isHeld;
 
         private Rigidbody rb;
         private Collider col;
+        private readonly HashSet<CargoItem> touchingCargo = new HashSet<CargoItem>();
 
         public Rigidbody Body => rb;
+        public Collider CollisionShape => col;
+        internal HashSet<CargoItem> TouchingCargo => touchingCargo;
 
         private void Awake()
         {
@@ -66,28 +80,135 @@ namespace Skyship
             col = GetComponent<Collider>();
         }
 
+        private void Start()
+        {
+            if (useCategorySurfaceDefaults)
+                ApplyCategorySurfaceDefaults();
+            RefreshPhysicalProperties();
+        }
+
+        /// <summary>
+        /// Keep collision momentum proportional to the gameplay weight. The conversion stays
+        /// deliberately small so the existing cargo physics remains stable while heavy objects
+        /// transfer meaningfully larger impulses through cargo chains and into railings.
+        /// </summary>
+        public void RefreshPhysicalProperties()
+        {
+            if (rb == null) rb = GetComponent<Rigidbody>();
+            if (rb == null) return;
+
+            rb.mass = Mathf.Max(0.1f, weight * Mathf.Max(0.005f, physicsMassPerWeight));
+            rb.collisionDetectionMode = rb.isKinematic
+                ? CollisionDetectionMode.ContinuousSpeculative
+                : CollisionDetectionMode.ContinuousDynamic;
+            rb.interpolation = isHeld
+                ? RigidbodyInterpolation.None
+                : RigidbodyInterpolation.Interpolate;
+            if (isHeld)
+            {
+                rb.useGravity = false;
+                rb.detectCollisions = false;
+            }
+        }
+
+        private void ApplyCategorySurfaceDefaults()
+        {
+            switch (category)
+            {
+                case CargoCategory.Crystal:
+                    deckGripMultiplier = 0.65f;
+                    barrierImpactMultiplier = 1.15f;
+                    break;
+                case CargoCategory.Treasure:
+                case CargoCategory.SpecialCargo:
+                    deckGripMultiplier = 0.75f;
+                    barrierImpactMultiplier = 1.1f;
+                    break;
+                case CargoCategory.Fuel:
+                    deckGripMultiplier = 0.85f;
+                    barrierImpactMultiplier = 0.9f;
+                    break;
+                case CargoCategory.Stone:
+                case CargoCategory.RepairCargo:
+                    deckGripMultiplier = 1.15f;
+                    barrierImpactMultiplier = 1f;
+                    break;
+                case CargoCategory.Ore:
+                    deckGripMultiplier = 0.95f;
+                    barrierImpactMultiplier = 1.2f;
+                    break;
+                default:
+                    deckGripMultiplier = 1f;
+                    barrierImpactMultiplier = 1f;
+                    break;
+            }
+        }
+
         /// <summary>Called by PlayerInteraction when the item is picked up.</summary>
         public void OnPickedUp(Transform holdParent)
         {
+            if (holdParent == null)
+            {
+                Debug.LogWarning($"[CargoItem] Cannot pick up '{itemName}' without a hold point.");
+                return;
+            }
+
             isHeld = true;
 
-            // Kinematic + collider off so it follows the hold point nicely
+            // Kinematic + collider off lets the transform follow the camera without physics
+            // interpolation writing the previous loose-cargo pose back over it.
             ApplyPhysics(dynamic: false, colliderEnabled: false);
+            FollowHoldPoint(holdParent);
+        }
 
-            if (holdParent != null)
+        /// <summary>
+        /// Snap held cargo after player/camera movement. PlayerInteraction calls this in
+        /// LateUpdate so CharacterController motion and Rigidbody interpolation cannot leave
+        /// the rendered crate behind.
+        /// </summary>
+        public void FollowHoldPoint(Transform holdParent)
+        {
+            FollowHoldPoint(holdParent, Vector3.zero, Quaternion.identity);
+        }
+
+        /// <summary>Variant used by remote-player puppets whose carry socket is an offset.</summary>
+        public void FollowHoldPoint(Transform holdParent, Vector3 localPosition, Quaternion localRotation)
+        {
+            if (!isHeld || holdParent == null) return;
+
+            if (transform.parent != holdParent)
+                transform.SetParent(holdParent, false);
+            transform.SetLocalPositionAndRotation(localPosition, localRotation);
+
+            // Keep the kinematic physics pose in lockstep with the rendered transform. Its
+            // collider is disabled while carried, but this prevents a stale pose on drop.
+            if (rb != null)
             {
-                transform.SetParent(holdParent);
-                transform.localPosition = Vector3.zero;
-                transform.localRotation = Quaternion.identity;
+                rb.position = transform.position;
+                rb.rotation = transform.rotation;
             }
         }
 
         /// <summary>Called by PlayerInteraction when the item is dropped into the world.</summary>
         public void OnDropped()
         {
+            OnDropped(Vector3.zero);
+        }
+
+        /// <summary>
+        /// Release the item with the carrier's world velocity plus any deliberate drop speed.
+        /// This prevents a carried kinematic body from hanging momentarily at zero velocity.
+        /// </summary>
+        public void OnDropped(Vector3 releaseVelocity)
+        {
             isHeld = false;
             transform.SetParent(null);
             ApplyPhysics(dynamic: true, colliderEnabled: true);
+            if (rb != null)
+            {
+                rb.linearVelocity = releaseVelocity;
+                rb.WakeUp();
+            }
         }
 
         private void ApplyPhysics(bool dynamic, bool colliderEnabled)
@@ -96,23 +217,52 @@ namespace Skyship
             {
                 if (!dynamic)
                 {
-                    // Only set velocity if it was not already kinematic, avoiding warnings
+                    // Only set velocity if it was not already kinematic, avoiding warnings.
                     if (!rb.isKinematic)
                     {
                         rb.linearVelocity = Vector3.zero;
                         rb.angularVelocity = Vector3.zero;
                     }
+
+                    // ContinuousDynamic is invalid for a kinematic carried body, and interpolation
+                    // can render its old physics pose after its parent/player already moved.
+                    rb.collisionDetectionMode = CollisionDetectionMode.ContinuousSpeculative;
+                    rb.interpolation = RigidbodyInterpolation.None;
                     rb.isKinematic = true;
                     rb.useGravity = false;
+                    rb.detectCollisions = false;
                 }
                 else
                 {
                     rb.isKinematic = false;
                     rb.useGravity = true;
+                    rb.detectCollisions = true;
+                    rb.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
+                    rb.interpolation = RigidbodyInterpolation.Interpolate;
+                    rb.WakeUp();
                 }
             }
             if (col != null)
                 col.enabled = colliderEnabled;
+        }
+
+        private void OnCollisionEnter(Collision collision) => RegisterCargoContact(collision, true);
+        private void OnCollisionStay(Collision collision) => RegisterCargoContact(collision, true);
+        private void OnCollisionExit(Collision collision) => RegisterCargoContact(collision, false);
+
+        private void RegisterCargoContact(Collision collision, bool touching)
+        {
+            if (collision == null || collision.collider == null) return;
+            CargoItem other = collision.collider.GetComponentInParent<CargoItem>();
+            if (other == null || other == this) return;
+
+            if (touching) touchingCargo.Add(other);
+            else touchingCargo.Remove(other);
+        }
+
+        private void OnDisable()
+        {
+            touchingCargo.Clear();
         }
     }
 }
